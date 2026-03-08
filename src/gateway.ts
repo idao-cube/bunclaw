@@ -1,16 +1,17 @@
 ﻿import { ensureDataDirs, loadConfig, saveConfig } from "./config";
 import { DatabaseStore } from "./db";
-import { EventLog } from "./event-log";
+import { EventLog, dayLogFile } from "./event-log";
 import { ProcessManager } from "./process-manager";
 import { validateFirstFrame, validateReqFrame } from "./protocol";
 import type { EventFrame, ResFrame } from "./types";
 import { runAgent } from "./agent";
+import { resolveAllowedTools } from "./tool-policy";
 
 export async function startGateway(options?: { configPath?: string }) {
   const config = await loadConfig(options?.configPath);
   await ensureDataDirs(config);
   const db = new DatabaseStore(config.sessions.dbPath);
-  const eventLog = new EventLog(config.sessions.eventsPath);
+  const eventLog = new EventLog(config.sessions.eventsPath, config.sessions.workspace);
   const processManager = new ProcessManager();
   db.createSession("main");
 
@@ -34,22 +35,27 @@ export async function startGateway(options?: { configPath?: string }) {
       }
       if (url.pathname === "/chat") {
         return new Response(renderChatPage(config.gateway.host, config.gateway.port, config.gateway.token || "", config.ui.brandName), {
-          headers: { "content-type": "text/html; charset=utf-8" },
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, max-age=0" },
         });
       }
       if (url.pathname === "/logs") {
         return new Response(renderLogsPage(config.gateway.host, config.gateway.port, config.gateway.token || "", config.ui.brandName), {
-          headers: { "content-type": "text/html; charset=utf-8" },
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, max-age=0" },
         });
       }
       if (url.pathname === "/config") {
         return new Response(renderConfigPage(config.gateway.host, config.gateway.port, config.gateway.token || "", config.ui.brandName), {
-          headers: { "content-type": "text/html; charset=utf-8" },
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, max-age=0" },
         });
       }
       if (url.pathname === "/stats") {
         return new Response(renderStatsPage(config.gateway.host, config.gateway.port, config.gateway.token || "", config.ui.brandName), {
-          headers: { "content-type": "text/html; charset=utf-8" },
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, max-age=0" },
+        });
+      }
+      if (url.pathname === "/skills") {
+        return new Response(renderSkillsPage(config.gateway.host, config.gateway.port, config.gateway.token || "", config.ui.brandName), {
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, max-age=0" },
         });
       }
       return new Response("未找到", { status: 404 });
@@ -148,6 +154,18 @@ async function handleMethod(
   },
 ): Promise<unknown> {
   if (method === "health") return { ok: true, uptime: process.uptime() };
+  if (method === "tools.list") {
+    const allowed = [...resolveAllowedTools({
+      profile: deps.config.tools.profile,
+      allow: deps.config.tools.allow,
+      deny: deps.config.tools.deny,
+    })];
+    return {
+      profile: deps.config.tools.profile,
+      allowed,
+      all: ["read", "write", "edit", "apply_patch", "exec", "process", "web_search", "web_fetch"],
+    };
+  }
   if (method === "session.create") return deps.db.createSession(String(params.sessionKey ?? `s-${Date.now()}`));
   if (method === "session.list") return deps.db.listSessions();
   if (method === "session.history") {
@@ -155,11 +173,56 @@ async function handleMethod(
     const limit = Number(params.limit ?? 100);
     return deps.db.listMessages(session.id, Number.isFinite(limit) ? limit : 100);
   }
+  if (method === "logs.list") {
+    const limit = Math.max(1, Math.min(500, Number(params.limit ?? 200) || 200));
+    const todayLogPath = dayLogFile(deps.config.sessions.workspace);
+    const daily = Bun.file(todayLogPath);
+    const fallback = Bun.file(deps.config.sessions.eventsPath);
+    const text = (await daily.exists()) ? await daily.text() : ((await fallback.exists()) ? await fallback.text() : "");
+    if (!text.trim()) return [];
+    const lines = text.trim().split("\n");
+    const out: Array<Record<string, unknown>> = [];
+    for (let i = Math.max(0, lines.length - limit); i < lines.length; i += 1) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      try {
+        const item = JSON.parse(line) as Record<string, unknown>;
+        const evt = String(item.event ?? "");
+        if (evt === "message.received" || evt === "agent.delta" || evt === "agent.final") continue;
+        out.push(item);
+      } catch {
+        // ignore invalid line
+      }
+    }
+    return out;
+  }
   if (method === "chat.clear") {
     deps.db.clearChatData();
     const main = deps.db.createSession("main");
     await deps.sendEvent("system.chat_cleared", { sessionId: main.id, at: new Date().toISOString() }, main.id);
     return { ok: true, sessionId: main.id };
+  }
+  if (method === "skill.list") {
+    return await listSkills(deps.config.storage?.skillsDir || `${process.cwd()}/.bunclaw/skills`);
+  }
+  if (method === "skill.get") {
+    const name = String(params.name ?? "").trim();
+    const out = await getSkill(deps.config.storage?.skillsDir || `${process.cwd()}/.bunclaw/skills`, name);
+    if (!out) throw new Error("技能不存在");
+    return out;
+  }
+  if (method === "skill.save") {
+    const name = String(params.name ?? "").trim();
+    const content = String(params.content ?? "");
+    const out = await saveSkill(deps.config.storage?.skillsDir || `${process.cwd()}/.bunclaw/skills`, name, content);
+    await deps.sendEvent("system.skill_saved", { name: out.name, path: out.path, at: new Date().toISOString() });
+    return out;
+  }
+  if (method === "skill.delete") {
+    const name = String(params.name ?? "").trim();
+    const ok = await deleteSkill(deps.config.storage?.skillsDir || `${process.cwd()}/.bunclaw/skills`, name);
+    await deps.sendEvent("system.skill_deleted", { name, ok, at: new Date().toISOString() });
+    return { ok };
   }
   if (method === "system.config.get") {
     return {
@@ -219,7 +282,8 @@ async function handleMethod(
     return { ok: true };
   }
   if (method === "stats.usage") {
-    const file = Bun.file(deps.config.sessions.eventsPath);
+    const dailyPath = dayLogFile(deps.config.sessions.workspace);
+    const file = Bun.file(dailyPath);
     const text = (await file.exists()) ? await file.text() : "";
     const mem = process.memoryUsage?.();
     const dbFile = Bun.file(deps.config.sessions.dbPath);
@@ -247,6 +311,7 @@ async function handleMethod(
         memoryHeapUsed: Number(mem?.heapUsed ?? 0),
         dbBytes: Number(dbStat?.size ?? 0),
         eventsBytes: Number(eventsStat?.size ?? 0),
+        dayPath: dailyPath,
       },
     };
   }
@@ -266,8 +331,11 @@ async function handleMethod(
         workspace: deps.config.sessions.workspace,
         processManager: deps.processManager,
         webSearch: {
+          provider: deps.config.tools.webSearch?.provider,
+          providers: deps.config.tools.webSearch?.providers,
           endpoint: deps.config.tools.webSearch?.endpoint,
           apiKey: deps.config.tools.webSearch?.apiKey,
+          timeoutMs: deps.config.tools.webSearch?.timeoutMs,
         },
       },
       sessionKey: String(params.sessionKey ?? "main"),
@@ -285,6 +353,92 @@ async function handleMethod(
     throw new Error("未知 process 动作");
   }
   throw new Error(`未知方法: ${method}`);
+}
+
+type SkillMeta = { name: string; file: string; bytes: number; updatedAt: string };
+
+async function listSkills(skillsDir: string): Promise<SkillMeta[]> {
+  await ensureDir(skillsDir);
+  const out = new Map<string, SkillMeta>();
+  const skillDocGlob = new Bun.Glob("**/SKILL.md");
+  for await (const file of skillDocGlob.scan({ cwd: skillsDir })) {
+    const full = joinPath(skillsDir, file);
+    const stat = await Bun.file(full).stat().catch(() => null);
+    if (!stat || !stat.isFile()) continue;
+    const parts = file.split(/[\\/]/).filter(Boolean);
+    if (parts.length < 2) continue;
+    const name = parts[parts.length - 2];
+    if (!name) continue;
+    out.set(name, {
+      name,
+      file,
+      bytes: Number(stat.size ?? 0),
+      updatedAt: stat.mtime?.toISOString?.() || new Date().toISOString(),
+    });
+  }
+
+  return [...out.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+async function getSkill(skillsDir: string, name: string): Promise<{ name: string; path: string; content: string } | null> {
+  await ensureDir(skillsDir);
+  const safe = sanitizeSkillName(name);
+  if (!safe) throw new Error("非法技能名称");
+  const candidates = [joinPath(skillsDir, `${safe}/SKILL.md`), joinPath(skillsDir, `${safe}/skill.md`)];
+  for (const p of candidates) {
+    const file = Bun.file(p);
+    if (await file.exists()) {
+      return { name: safe, path: p, content: await file.text() };
+    }
+  }
+  return null;
+}
+
+async function saveSkill(skillsDir: string, name: string, content: string): Promise<{ ok: true; name: string; path: string; bytes: number }> {
+  await ensureDir(skillsDir);
+  const safe = sanitizeSkillName(name);
+  if (!safe) throw new Error("非法技能名称");
+  await ensureDir(joinPath(skillsDir, safe));
+  const path = joinPath(skillsDir, `${safe}/SKILL.md`);
+  await Bun.write(path, content.endsWith("\n") ? content : `${content}\n`);
+  const stat = await Bun.file(path).stat().catch(() => null);
+  return { ok: true, name: safe, path, bytes: Number(stat?.size ?? 0) };
+}
+
+async function deleteSkill(skillsDir: string, name: string): Promise<boolean> {
+  await ensureDir(skillsDir);
+  const safe = sanitizeSkillName(name);
+  if (!safe) throw new Error("非法技能名称");
+  const candidates = [joinPath(skillsDir, `${safe}/SKILL.md`), joinPath(skillsDir, `${safe}/skill.md`)];
+  for (const p of candidates) {
+    const file = Bun.file(p);
+    if (await file.exists()) {
+      await file.delete();
+      return true;
+    }
+  }
+  return false;
+}
+
+async function ensureDir(dir: string): Promise<void> {
+  if (process.platform === "win32") {
+    await Bun.spawn(["powershell", "-NoProfile", "-Command", `New-Item -ItemType Directory -Path '${dir}' -Force | Out-Null`]).exited;
+    return;
+  }
+  await Bun.spawn(["sh", "-lc", `mkdir -p '${dir}'`]).exited;
+}
+
+function sanitizeSkillName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "";
+  if (trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\")) return "";
+  if (!/^[a-zA-Z0-9._\-\u4e00-\u9fa5]+$/.test(trimmed)) return "";
+  return trimmed;
+}
+
+function joinPath(a: string, b: string): string {
+  const left = a.replaceAll("\\", "/").replace(/\/$/, "");
+  return `${left}/${b}`;
 }
 
 function renderSharedStyle(): string {
@@ -364,8 +518,16 @@ function renderSharedStyle(): string {
     .bubble { max-width:82%; padding:10px 12px; border-radius:12px; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
     .bubble.user { margin-left:auto; background:linear-gradient(180deg,#f4f6f9,#e0e4ea); color:#111216; border-bottom-right-radius:4px; }
     .bubble.assistant { margin-right:auto; background:rgba(255,255,255,.10); color:#eef1f5; border:1px solid #ffffff2b; border-bottom-left-radius:4px; }
+    .bubble.tool { margin-right:auto; max-width:92%; background:rgba(255,255,255,.07); color:var(--ink); border:1px dashed #ffffff55; border-left:4px solid rgba(255,255,255,.65); border-radius:10px; }
+    .bubble.tool .bubble-meta { color:var(--muted); }
     .chat-input-wrap { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; gap:8px; align-items:end; margin-top:10px; }
     .chat-input { min-height:48px; max-height:160px; margin:0; }
+    .input-stack { position:relative; min-width:0; }
+    .skill-suggest { position:absolute; left:0; right:0; bottom:100%; margin-bottom:6px; background:var(--glass-2); border:1px solid var(--line); border-radius:10px; max-height:200px; overflow:auto; display:none; z-index:20; backdrop-filter: blur(10px); }
+    .skill-suggest.active { display:block; }
+    .skill-item { padding:8px 10px; cursor:pointer; border-bottom:1px solid #ffffff1f; font-size:13px; }
+    .skill-item:last-child { border-bottom:none; }
+    .skill-item:hover, .skill-item.active { background:rgba(255,255,255,.15); }
     .chat-action { width:120px; margin:0; }
     .send-status { font-size:12px; color:var(--muted); padding:0 4px; align-self:center; }
     .bubble-meta { margin-top:6px; font-size:11px; color:var(--muted); }
@@ -392,6 +554,7 @@ function renderSharedStyle(): string {
     .raw-config { width:100%; height:48vh; min-height:280px; max-height:64vh; overflow:auto; background:rgba(0,0,0,.32); border:1px solid #ffffff25; border-radius:12px; padding:12px; color:var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height:1.5; }
     .theme-light pre, .theme-light .raw-config { background:rgba(255,255,255,.86); color:#111216; border-color:rgba(0,0,0,.14); }
     .theme-light .bubble.assistant { background:rgba(255,255,255,.82); color:#111216; border-color:rgba(15,18,24,.18); }
+    .theme-light .bubble.tool { background:rgba(255,255,255,.92); color:#111216; border-color:rgba(15,18,24,.28); border-left-color:rgba(15,18,24,.5); }
     .theme-light .btn-secondary, .theme-light .theme-btn { background:rgba(0,0,0,.06); color:#0f1115; border-color:rgba(15,18,24,.18); }
     @media (max-width: 1200px) {
       .chat-input-wrap { grid-template-columns:minmax(0,1fr) auto auto; }
@@ -435,6 +598,7 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
         <a href="/logs">日志</a>
         <a id="menu-config" href="/config">系统配置</a>
         <a id="menu-stats" href="/stats">统计</a>
+        <a id="menu-skills" href="/skills">技能管理</a>
       </nav>
       <div class="endpoint-wrap">
         <button id="themeToggle" class="theme-btn">浅色主题</button>
@@ -449,7 +613,10 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
         </div>
         <div id="chat-thread" class="chat-thread"></div>
         <div class="chat-input-wrap">
-          <textarea id="chat-input" class="chat-input" placeholder="输入消息，回车发送（Shift+Enter 换行）"></textarea>
+          <div class="input-stack">
+            <div id="skillSuggest" class="skill-suggest"></div>
+            <textarea id="chat-input" class="chat-input" placeholder="输入消息，回车发送（Shift+Enter 换行）。支持 @技能名 或 /技能名"></textarea>
+          </div>
           <div id="sendStatus" class="send-status">空闲</div>
           <button id="sendBtn" class="chat-action">发送</button>
           <button id="clearAllBtn" class="chat-action btn-danger">清除所有消息</button>
@@ -460,6 +627,7 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
   <script>
     const thread = document.getElementById('chat-thread');
     const input = document.getElementById('chat-input');
+    const skillSuggest = document.getElementById('skillSuggest');
     const sendBtn = document.getElementById('sendBtn');
     const clearAllBtn = document.getElementById('clearAllBtn');
     const sendStatus = document.getElementById('sendStatus');
@@ -493,6 +661,9 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
     let currentRunId = null;
     let currentAssistantBubble = null;
     let sending = false;
+    let skills = [];
+    let suggestItems = [];
+    let suggestIndex = -1;
     const ensureReady = () => {
       if (ws.readyState !== WebSocket.OPEN) throw new Error('连接尚未就绪，请稍后重试');
     };
@@ -513,6 +684,49 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
         appendBubble('assistant', e instanceof Error ? e.message : String(e));
       }
     };
+    const escapeHtml = (s) => String(s || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    const renderSkillSuggest = () => {
+      const text = input.value || '';
+      if (!text.startsWith('/')) {
+        skillSuggest.classList.remove('active');
+        skillSuggest.innerHTML = '';
+        suggestItems = [];
+        suggestIndex = -1;
+        return;
+      }
+      const afterSlash = text.slice(1);
+      if (afterSlash.includes(' ') || afterSlash.includes('\\n') || afterSlash.includes('\\r')) {
+        skillSuggest.classList.remove('active');
+        skillSuggest.innerHTML = '';
+        suggestItems = [];
+        suggestIndex = -1;
+        return;
+      }
+      const kwRaw = String(afterSlash || '').toLowerCase();
+      const kw = kwRaw === 'skill' ? '' : kwRaw;
+      const matched = skills.filter((x) => !kw || String(x.name || '').toLowerCase().includes(kw)).slice(0, 20);
+      suggestItems = matched;
+      if (matched.length === 0) {
+        skillSuggest.classList.remove('active');
+        skillSuggest.innerHTML = '';
+        suggestIndex = -1;
+        return;
+      }
+      if (suggestIndex >= matched.length) suggestIndex = 0;
+      skillSuggest.innerHTML = matched.map((x, i) => '<div class="skill-item ' + (i === suggestIndex ? 'active' : '') + '" data-i="' + i + '">/' + escapeHtml(x.name) + '</div>').join('');
+      skillSuggest.classList.add('active');
+    };
+    const applySkillByIndex = (idx) => {
+      const item = suggestItems[idx];
+      if (!item) return;
+      input.value = '/' + item.name + ' ';
+      renderSkillSuggest();
+      input.focus();
+    };
+    const loadSkills = async () => {
+      const res = await req('skill.list', {});
+      if (res.ok && Array.isArray(res.payload)) skills = res.payload;
+    };
     const sendMessage = async () => {
       if (sending) return;
       const sessionKey = document.getElementById('session').value || 'main';
@@ -529,9 +743,13 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
         const res = await req('agent.run', { sessionKey, message });
         if (!res.ok && res.error) {
           currentAssistantBubble.content.textContent = 'Agent 执行失败: ' + (res.error.message || JSON.stringify(res.error));
-        } else if (res.payload && res.payload.output && !currentAssistantBubble.content.textContent.trim()) {
-          currentAssistantBubble.content.textContent = res.payload.output;
-          currentAssistantBubble.meta.textContent = '约 ' + Number(res.payload.tokens || 0) + ' tokens';
+        } else if (res.payload && res.payload.output) {
+          const oldText = (currentAssistantBubble.content.textContent || '').trim();
+          if (!oldText || oldText === '思考中...') {
+            currentAssistantBubble.content.textContent = String(res.payload.output || '');
+          }
+          const t = Number(res.payload.tokens || 0);
+          if (t > 0) currentAssistantBubble.meta.textContent = '约 ' + t + ' tokens';
         }
       } catch (e) {
         appendBubble('assistant', e instanceof Error ? e.message : String(e));
@@ -566,7 +784,6 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
       sendBtn.disabled = false;
       clearAllBtn.disabled = false;
       appendBubble('assistant', '已连接网关');
-      loadHistory();
     };
     ws.onclose = () => {
       sendBtn.disabled = true;
@@ -580,6 +797,11 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
+      if (msg.type === 'res' && msg.id === 'connect') {
+        loadHistory();
+        loadSkills();
+        return;
+      }
       if (msg.type === 'res' && pending.has(msg.id)) {
         pending.get(msg.id)(msg);
         pending.delete(msg.id);
@@ -589,12 +811,21 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
         if (!currentAssistantBubble) currentAssistantBubble = appendBubble('assistant', '');
         if (!currentRunId) currentRunId = msg.payload && msg.payload.runId ? msg.payload.runId : null;
         if (!currentRunId || msg.payload.runId === currentRunId) {
+          sendStatus.textContent = '生成回复中...';
           if (currentAssistantBubble.content.textContent === '思考中...') currentAssistantBubble.content.textContent = '';
           currentAssistantBubble.content.textContent += msg.payload.text || '';
           thread.scrollTop = thread.scrollHeight;
         }
       }
       if (msg.type === 'event' && msg.event === 'agent.final' && currentAssistantBubble) {
+        const runId = msg.payload && msg.payload.runId ? msg.payload.runId : null;
+        if (!currentRunId && runId) currentRunId = runId;
+        if (currentRunId && runId && runId !== currentRunId) return;
+        const text = String(msg.payload && msg.payload.text ? msg.payload.text : '').trim();
+        const oldText = String(currentAssistantBubble.content.textContent || '').trim();
+        if (text && (!oldText || oldText === '思考中...')) {
+          currentAssistantBubble.content.textContent = text;
+        }
         const t = Number(msg.payload && msg.payload.tokens ? msg.payload.tokens : 0);
         if (t > 0) currentAssistantBubble.meta.textContent = '约 ' + t + ' tokens';
         sendStatus.textContent = '已完成';
@@ -602,7 +833,42 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
     };
     sendBtn.onclick = sendMessage;
     clearAllBtn.onclick = clearAllMessages;
+    skillSuggest.onclick = (ev) => {
+      const el = ev.target && ev.target.closest ? ev.target.closest('.skill-item') : null;
+      if (!el) return;
+      const idx = Number(el.getAttribute('data-i') || -1);
+      if (idx >= 0) applySkillByIndex(idx);
+    };
+    input.addEventListener('input', () => {
+      suggestIndex = 0;
+      renderSkillSuggest();
+    });
     input.addEventListener('keydown', (ev) => {
+      if (skillSuggest.classList.contains('active')) {
+        if (ev.key === 'ArrowDown') {
+          ev.preventDefault();
+          if (suggestItems.length > 0) {
+            suggestIndex = (suggestIndex + 1 + suggestItems.length) % suggestItems.length;
+            renderSkillSuggest();
+          }
+          return;
+        }
+        if (ev.key === 'ArrowUp') {
+          ev.preventDefault();
+          if (suggestItems.length > 0) {
+            suggestIndex = (suggestIndex - 1 + suggestItems.length) % suggestItems.length;
+            renderSkillSuggest();
+          }
+          return;
+        }
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          if (suggestIndex >= 0 && suggestItems.length > 0) {
+            applySkillByIndex(suggestIndex);
+            return;
+          }
+        }
+      }
       if (ev.key === 'Enter' && !ev.shiftKey) {
         ev.preventDefault();
         sendMessage();
@@ -634,6 +900,7 @@ function renderLogsPage(host: string, port: number, token: string, brandName: st
         <a href="/logs" class="active">日志</a>
         <a id="menu-config" href="/config">系统配置</a>
         <a id="menu-stats" href="/stats">统计</a>
+        <a id="menu-skills" href="/skills">技能管理</a>
       </nav>
       <div class="endpoint-wrap">
         <button id="themeToggle" class="theme-btn">浅色主题</button>
@@ -667,16 +934,7 @@ function renderLogsPage(host: string, port: number, token: string, brandName: st
       eventLog.scrollTop = eventLog.scrollHeight;
     };
     const isChatEvent = (evt) => evt === 'message.received' || evt === 'agent.delta' || evt === 'agent.final';
-    const normalizeEvent = (msg) => {
-      const payload = msg && msg.payload && typeof msg.payload === 'object' ? { ...msg.payload } : msg.payload;
-      if (payload && typeof payload === 'object') {
-        delete payload.content;
-        delete payload.message;
-        delete payload.text;
-        delete payload.output;
-      }
-      return { ...msg, payload };
-    };
+    const normalizeEvent = (msg) => msg;
     const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
     document.getElementById('header-endpoint').textContent = '实时事件流：' + wsUrl;
     const ws = new WebSocket(wsUrl);
@@ -693,12 +951,23 @@ function renderLogsPage(host: string, port: number, token: string, brandName: st
       pending.set(id, resolve);
       ws.send(JSON.stringify({ type:'req', id, method, params, idemKey: crypto.randomUUID() }));
     });
+    const loadHistory = async () => {
+      const res = await req('logs.list', { limit: 200 });
+      if (!res.ok || !Array.isArray(res.payload)) return;
+      eventLog.textContent = '';
+      for (const item of res.payload) print(normalizeEvent(item));
+      print('已加载历史日志，共 ' + String(res.payload.length) + ' 条');
+    };
     ws.onopen = () => {
       ws.send(JSON.stringify({ type:'connect', auth:{ token }, client:'bunclaw-logs' }));
-      print('已连接日志流');
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
+      if (msg.type === 'res' && msg.id === 'connect') {
+        print('已连接日志流');
+        loadHistory().catch((e) => print('加载历史日志失败：' + String(e && e.message ? e.message : e)));
+        return;
+      }
       if (msg.type === 'res' && pending.has(msg.id)) {
         pending.get(msg.id)(msg);
         pending.delete(msg.id);
@@ -709,6 +978,156 @@ function renderLogsPage(host: string, port: number, token: string, brandName: st
       }
     };
     ws.onerror = () => print('连接异常，请检查网关状态');
+  </script>
+</body>
+</html>`;
+}
+
+function renderSkillsPage(host: string, port: number, token: string, brandName: string): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${brandName} 技能管理</title>
+  ${renderSharedStyle()}
+</head>
+<body class="liquid-bg">
+  <div class="app-shell">
+    <div class="header">
+      <div class="brand"><div class="logo"></div><div class="brand-text">${brandName}</div></div>
+      <nav class="menu">
+        <a href="/chat">聊天</a>
+        <a href="/logs">日志</a>
+        <a id="menu-config" href="/config">系统配置</a>
+        <a id="menu-stats" href="/stats">统计</a>
+        <a id="menu-skills" class="active" href="/skills">技能管理</a>
+      </nav>
+      <div class="endpoint-wrap">
+        <button id="themeToggle" class="theme-btn">浅色主题</button>
+        <div id="header-endpoint" class="endpoint">网关：ws://${host}:${port}/ws</div>
+      </div>
+    </div>
+    <div class="wrap">
+      <div class="card">
+        <h2 class="section-title">技能管理</h2>
+        <div class="hint">技能文件位置：<code>.bunclaw/skills</code>，聊天可用 <code>@技能名</code> 或 <code>/技能名</code> 调用。</div>
+        <div class="chat-input-wrap">
+          <input id="skillName" placeholder="技能名（如 netdiag）" />
+          <button id="skillNew" class="chat-action btn-secondary">新建</button>
+          <button id="skillRefresh" class="chat-action btn-secondary">刷新</button>
+          <button id="skillDelete" class="chat-action btn-danger">删除</button>
+        </div>
+        <div class="chat-input-wrap" style="margin-top:8px;">
+          <input id="skillFilter" placeholder="筛选技能..." />
+          <div class="send-status"></div>
+          <button id="skillSave" class="chat-action">保存</button>
+          <button id="skillInsert" class="chat-action btn-secondary">插入模板</button>
+        </div>
+        <div class="hint" id="skillCount">技能列表：0</div>
+        <pre id="skillList" class="log-box"></pre>
+        <textarea id="skillContent" class="raw-config" spellcheck="false" placeholder="# 技能说明"></textarea>
+        <pre id="skillLog"></pre>
+      </div>
+    </div>
+  </div>
+  <script>
+    const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    const themeToggle = document.getElementById('themeToggle');
+    const applyTheme = (theme) => {
+      document.body.classList.toggle('theme-light', theme === 'light');
+      themeToggle.textContent = theme === 'light' ? '深色主题' : '浅色主题';
+      localStorage.setItem('bunclaw_theme', theme);
+    };
+    applyTheme(localStorage.getItem('bunclaw_theme') || 'dark');
+    themeToggle.onclick = () => applyTheme(document.body.classList.contains('theme-light') ? 'dark' : 'light');
+    document.getElementById('header-endpoint').textContent = '网关：' + wsUrl;
+
+    const ws = new WebSocket(wsUrl);
+    const token = ${JSON.stringify(token)};
+    const pending = new Map();
+    const skillName = document.getElementById('skillName');
+    const skillFilter = document.getElementById('skillFilter');
+    const skillList = document.getElementById('skillList');
+    const skillContent = document.getElementById('skillContent');
+    const skillLog = document.getElementById('skillLog');
+    const skillCount = document.getElementById('skillCount');
+    let allSkills = [];
+
+    const print = (txt) => {
+      skillLog.textContent += '[' + new Date().toLocaleTimeString() + '] ' + txt + '\\n';
+      skillLog.scrollTop = skillLog.scrollHeight;
+    };
+    const req = (method, params) => new Promise((resolve) => {
+      const id = crypto.randomUUID();
+      pending.set(id, resolve);
+      ws.send(JSON.stringify({ type:'req', id, method, params }));
+    });
+    const renderList = () => {
+      const kw = String(skillFilter.value || '').toLowerCase();
+      const rows = allSkills.filter((s) => !kw || String(s.name || '').toLowerCase().includes(kw));
+      skillCount.textContent = '技能列表：' + rows.length;
+      skillList.textContent = rows.map((s) => '- ' + s.name + ' (' + (s.bytes || 0) + ' B)').join('\\n') || '（暂无技能）';
+    };
+    const loadSkills = async () => {
+      const res = await req('skill.list', {});
+      if (!res.ok) throw new Error(res.error?.message || '读取技能列表失败');
+      allSkills = Array.isArray(res.payload) ? res.payload : [];
+      renderList();
+    };
+    const loadSkill = async (name) => {
+      const n = String(name || '').trim();
+      if (!n) return;
+      const res = await req('skill.get', { name: n });
+      if (!res.ok) throw new Error(res.error?.message || '读取技能失败');
+      skillName.value = res.payload.name || n;
+      skillContent.value = res.payload.content || '';
+      print('已加载技能：' + skillName.value);
+    };
+    const saveSkill = async () => {
+      const n = String(skillName.value || '').trim();
+      if (!n) throw new Error('请先填写技能名');
+      const res = await req('skill.save', { name: n, content: String(skillContent.value || '') });
+      if (!res.ok) throw new Error(res.error?.message || '保存技能失败');
+      print('已保存：' + n);
+      await loadSkills();
+    };
+    const delSkill = async () => {
+      const n = String(skillName.value || '').trim();
+      if (!n) throw new Error('请先填写技能名');
+      const res = await req('skill.delete', { name: n });
+      if (!res.ok) throw new Error(res.error?.message || '删除失败');
+      print('已删除：' + n);
+      skillContent.value = '';
+      await loadSkills();
+    };
+    ws.onopen = () => ws.send(JSON.stringify({ type:'connect', auth:{ token }, client:'bunclaw-skills' }));
+    ws.onmessage = async (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'res' && msg.id === 'connect') {
+        try { await loadSkills(); } catch (e) { print(String(e.message || e)); }
+        return;
+      }
+      if (msg.type === 'res' && pending.has(msg.id)) {
+        pending.get(msg.id)(msg);
+        pending.delete(msg.id);
+      }
+    };
+    ws.onerror = () => print('连接异常');
+
+    skillFilter.oninput = () => renderList();
+    skillList.ondblclick = async () => {
+      const line = window.getSelection ? String(window.getSelection()) : '';
+      const m = line.match(/-\\s+([a-zA-Z0-9._\\-\\u4e00-\\u9fa5]+)/);
+      if (!m) return;
+      try { await loadSkill(m[1]); } catch (e) { print(String(e.message || e)); }
+    };
+    document.getElementById('skillRefresh').onclick = async () => { try { await loadSkills(); } catch (e) { print(String(e.message || e)); } };
+    document.getElementById('skillNew').onclick = () => { skillName.value = ''; skillContent.value = '# 技能名称\\n\\n## 目标\\n- 描述这个技能做什么\\n'; };
+    document.getElementById('skillInsert').onclick = () => { skillContent.value += '\\n## 使用约束\\n- 仅在满足条件时执行\\n'; };
+    document.getElementById('skillSave').onclick = async () => { try { await saveSkill(); } catch (e) { print(String(e.message || e)); } };
+    document.getElementById('skillDelete').onclick = async () => { try { await delSkill(); } catch (e) { print(String(e.message || e)); } };
+    skillName.addEventListener('change', async () => { try { await loadSkill(skillName.value); } catch { /* ignore */ } });
   </script>
 </body>
 </html>`;
@@ -732,6 +1151,7 @@ function renderConfigPage(host: string, port: number, token: string, brandName: 
         <a href="/logs">日志</a>
         <a id="menu-config" class="active" href="/config">系统配置</a>
         <a id="menu-stats" href="/stats">统计</a>
+        <a id="menu-skills" href="/skills">技能管理</a>
       </nav>
       <div class="endpoint-wrap">
         <button id="themeToggle" class="theme-btn">浅色主题</button>
@@ -918,6 +1338,7 @@ function renderStatsPage(host: string, port: number, token: string, brandName: s
         <a href="/logs">日志</a>
         <a id="menu-config" href="/config">系统配置</a>
         <a id="menu-stats" class="active" href="/stats">统计</a>
+        <a id="menu-skills" href="/skills">技能管理</a>
       </nav>
       <div class="endpoint-wrap">
         <button id="themeToggle" class="theme-btn">浅色主题</button>

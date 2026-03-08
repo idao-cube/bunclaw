@@ -49,8 +49,10 @@ export type Config = {
     deny: string[];
     webSearch?: {
       provider?: string;
+      providers?: string[];
       endpoint?: string;
       apiKey?: string;
+      timeoutMs?: number;
     };
   };
   sessions: {

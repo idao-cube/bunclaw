@@ -92,6 +92,18 @@ describe("web ui", () => {
     expect(html.includes("statsSystem")).toBe(true);
     expect(html.includes("sys-grid")).toBe(true);
   });
+
+  test("GET /skills returns skills page", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/skills`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html.includes("技能管理")).toBe(true);
+    expect(html.includes("skill.list")).toBe(true);
+    expect(html.includes("skill.save")).toBe(true);
+    expect(html.includes("skill.delete")).toBe(true);
+    expect(html.includes("skillContent")).toBe(true);
+    expect(html.includes("menu-skills")).toBe(true);
+  });
 });
 
 

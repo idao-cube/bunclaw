@@ -28,7 +28,14 @@ describe("gateway integration", () => {
             eventsPath: `.tmp-gateway-${id}.jsonl`,
             workspace: process.cwd(),
           },
+          storage: {
+            baseDir: process.cwd(),
+            skillsDir: `.tmp-skills-${id}`,
+            agentsDir: `.tmp-agents-${id}`,
+            channelsDir: `.tmp-channels-${id}`,
+          },
           security: { workspaceOnly: true },
+          ui: { brandName: "BunClaw" },
         },
         null,
         2,
@@ -115,6 +122,43 @@ describe("gateway integration", () => {
 
     const rawSave = await callGateway("system.config.file.save", { text: (rawGet.response.payload as any).text }, { configPath });
     expect(rawSave.response.ok).toBe(true);
+  });
+
+  test("tools.list and skill CRUD work", async () => {
+    const skillRoot = `.tmp-skills-${id}`;
+    if (process.platform === "win32") {
+      await Bun.spawn(["powershell", "-NoProfile", "-Command", `New-Item -ItemType Directory -Path '${skillRoot}\\tech-article-generator' -Force | Out-Null`]).exited;
+    } else {
+      await Bun.spawn(["sh", "-lc", `mkdir -p '${skillRoot}/tech-article-generator'`]).exited;
+    }
+    await Bun.write(`${skillRoot}/tech-article-generator/SKILL.md`, "# tech article generator\n");
+
+    const tools = await callGateway("tools.list", {}, { configPath });
+    expect(tools.response.ok).toBe(true);
+    const allowed = (tools.response.payload as any).allowed as string[];
+    expect(Array.isArray(allowed)).toBe(true);
+    expect(allowed.includes("exec")).toBe(true);
+
+    const save = await callGateway("skill.save", { name: "netdiag", content: "# netdiag\n执行网络检查" }, { configPath });
+    expect(save.response.ok).toBe(true);
+
+    const list = await callGateway("skill.list", {}, { configPath });
+    expect(list.response.ok).toBe(true);
+    const names = ((list.response.payload as any[]) || []).map((x) => x.name);
+    expect(names.includes("netdiag")).toBe(true);
+    expect(names.includes("tech-article-generator")).toBe(true);
+
+    const get = await callGateway("skill.get", { name: "netdiag" }, { configPath });
+    expect(get.response.ok).toBe(true);
+    expect(String((get.response.payload as any).content || "")).toContain("netdiag");
+
+    const getDirSkill = await callGateway("skill.get", { name: "tech-article-generator" }, { configPath });
+    expect(getDirSkill.response.ok).toBe(true);
+    expect(String((getDirSkill.response.payload as any).content || "")).toContain("tech article generator");
+
+    const del = await callGateway("skill.delete", { name: "netdiag" }, { configPath });
+    expect(del.response.ok).toBe(true);
+    expect((del.response.payload as any).ok).toBe(true);
   });
 });
 

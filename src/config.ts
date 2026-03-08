@@ -17,7 +17,7 @@ export function defaultConfig(): Config {
       profile: "coding",
       allow: [],
       deny: [],
-      webSearch: { provider: "", endpoint: "", apiKey: "" },
+      webSearch: { providers: ["news", "media", "bing", "google", "baidu", "github"], timeoutMs: 8000 },
     },
     sessions: {
       dbPath: toPlatformPath(`${DEFAULT_BASE_DIR}/bunclaw.db`),
@@ -152,13 +152,22 @@ function normalizeWorkspacePath(current: string, fallback: string): string {
   if (!ws.trim()) return fb;
 
   const legacyPrefix = toPlatformPath(`${process.cwd()}/.bunclaw`);
+  const cwd = toPlatformPath(process.cwd());
+  const homeBase = toPlatformPath(`${userHomeDir()}/.bunclaw`);
   const lowerWs = process.platform === "win32" ? ws.toLowerCase() : ws;
   const lowerLegacy = process.platform === "win32" ? legacyPrefix.toLowerCase() : legacyPrefix;
+  const lowerCwd = process.platform === "win32" ? cwd.toLowerCase() : cwd;
+  const lowerHomeBase = process.platform === "win32" ? homeBase.toLowerCase() : homeBase;
   const legacyRel1 = process.platform === "win32" ? ".bunclaw\\workspace" : ".bunclaw/workspace";
   const legacyRel2 = process.platform === "win32" ? ".\\bunclaw\\workspace" : "./.bunclaw/workspace";
+  const legacyRel3 = process.platform === "win32" ? ".\\" : "./";
+  const legacyRel4 = process.platform === "win32" ? ".\\workspace" : "./workspace";
 
-  if (lowerWs === legacyRel1 || lowerWs === legacyRel2) return fb;
+  if (lowerWs === legacyRel1 || lowerWs === legacyRel2 || lowerWs === legacyRel3 || lowerWs === legacyRel4) return fb;
   if (lowerWs.startsWith(lowerLegacy)) return fb;
+  if (lowerWs === lowerCwd || lowerWs.startsWith(`${lowerCwd}${process.platform === "win32" ? "\\" : "/"}`)) {
+    if (!lowerWs.startsWith(lowerHomeBase)) return fb;
+  }
   return ws;
 }
 

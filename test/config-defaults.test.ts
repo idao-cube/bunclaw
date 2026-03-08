@@ -50,4 +50,17 @@ describe("默认目录", () => {
     expect(loaded.sessions.workspace.endsWith(`${sep}.bunclaw${sep}workspace`)).toBe(true);
     expect(loaded.sessions.workspace.includes(`${sep}.tmp-cfg-`)).toBe(false);
   });
+
+  test("旧配置中的仓库绝对 workspace 应自动迁移到用户目录", async () => {
+    const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const sep = process.platform === "win32" ? "\\" : "/";
+    const p = `${process.cwd()}${sep}.tmp-cfg-${id}-2.json`;
+    const cfg = defaultConfig();
+    cfg.sessions.workspace = `${process.cwd()}${sep}workspace`;
+    await Bun.write(p, `${JSON.stringify(cfg, null, 2)}\n`);
+    const loaded = await loadConfig(p);
+    expect(loaded.sessions.workspace.endsWith(`${sep}.bunclaw${sep}workspace`)).toBe(true);
+    expect(loaded.sessions.workspace.includes(`${sep}workspace`)).toBe(true);
+    expect(loaded.sessions.workspace.startsWith(process.cwd())).toBe(false);
+  });
 });
