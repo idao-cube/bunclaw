@@ -4,6 +4,21 @@ Param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+function Ensure-WixInPath {
+  $candidates = @(
+    "${env:ProgramFiles(x86)}\WiX Toolset v3.11\bin",
+    "${env:ProgramFiles}\WiX Toolset v3.11\bin"
+  )
+  foreach ($p in $candidates) {
+    if (Test-Path $p) {
+      if (-not ($env:PATH -split ';' | Where-Object { $_ -eq $p })) {
+        $env:PATH = "$p;$env:PATH"
+      }
+    }
+  }
+}
 
 function Get-PackageVersion {
   $pkg = Get-Content -Raw "package.json" | ConvertFrom-Json
@@ -25,8 +40,12 @@ if ([string]::IsNullOrWhiteSpace($ExePath)) {
   $ExePath = $candidate.FullName
 }
 
-if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
-  throw "WiX Toolset 3.x not found (missing candle.exe)."
+Ensure-WixInPath
+
+$candle = Get-Command candle.exe -ErrorAction SilentlyContinue
+$light = Get-Command light.exe -ErrorAction SilentlyContinue
+if ($null -eq $candle -or $null -eq $light) {
+  throw "WiX Toolset 3.x not found (missing candle.exe/light.exe)."
 }
 
 $outDir = Join-Path (Get-Location) "dist"
@@ -36,8 +55,18 @@ $wxs = Join-Path (Get-Location) "packaging/wix/BunClaw.wxs"
 $wixobj = Join-Path $outDir "BunClaw.wixobj"
 $msi = Join-Path $outDir ("BunClaw-" + $Version + "-x64.msi")
 
-& candle.exe -nologo -ext WixUIExtension -dProductVersion=$Version -dSourceExe="$ExePath" -out "$wixobj" "$wxs"
-& light.exe -nologo -ext WixUIExtension -out "$msi" "$wixobj"
+& $candle.Source -nologo -ext WixUIExtension -dProductVersion=$Version -dSourceExe="$ExePath" -out "$wixobj" "$wxs"
+if ($LASTEXITCODE -ne 0) {
+  throw "candle failed with exit code $LASTEXITCODE"
+}
+
+& $light.Source -nologo -ext WixUIExtension -out "$msi" "$wixobj"
+if ($LASTEXITCODE -ne 0) {
+  throw "light failed with exit code $LASTEXITCODE"
+}
+
+if (-not (Test-Path $msi)) {
+  throw "MSI output not found: $msi"
+}
 
 Write-Host "MSI build completed: $msi"
-
