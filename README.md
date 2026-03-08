@@ -197,6 +197,7 @@ chmod +x ./dist/bunclaw-bun-darwin-arm64
 - 三平台矩阵测试（Windows/macOS/Linux）
 - Ubuntu 执行 `package:all` 产出多平台二进制
 - 自动上传 `dist/*` 构建产物
+- 当推送 `v*` 标签时，自动创建/更新 GitHub Release 并附带 `dist/*` 二进制
 
 ## 开发与测试
 
@@ -244,4 +245,3 @@ BunClaw is a pure-Bun local agent core inspired by OpenClaw, focusing on a stabl
 - SQLite sessions/messages/idempotency + JSONL events
 - Built-in Web UI (`/chat`, `/logs`, `/config`, `/stats`)
 - Single-binary packaging and GitHub Actions CI
-
