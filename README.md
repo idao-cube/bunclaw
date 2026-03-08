@@ -21,6 +21,50 @@ BunClaw 是一个面向本地开发与自动化的 Agent 内核，目标是：
 - 希望通过 WebSocket 协议接入自定义前端/终端客户端
 - 想要“先本地跑通、再逐步扩展渠道/插件/设备能力”
 
+## 安装方式（开箱即用）
+
+### 1) npm 安装（推荐）
+
+```bash
+npm i -g @idao-cube/bunclaw
+```
+
+安装后可直接使用：
+
+```bash
+bunclaw --help
+bunclaw onboard
+bunclaw gateway
+```
+
+> 说明：包地址在 npm 组织 `idao-cube` 下。  
+> `https://www.npmjs.com/org/idao-cube`
+
+### 2) 二进制安装（无需 npm）
+
+从 GitHub Releases 下载对应平台二进制后执行：
+
+```bash
+# Windows
+./bunclaw-bun-windows-x64.exe gateway
+
+# Linux
+chmod +x ./bunclaw-bun-linux-x64
+./bunclaw-bun-linux-x64 gateway
+
+# macOS
+chmod +x ./bunclaw-bun-darwin-arm64
+./bunclaw-bun-darwin-arm64 gateway
+```
+
+### 3) MSI 安装（Windows）
+
+从 Releases 下载 `BunClaw-<version>-x64.msi`，双击安装后使用：
+
+```powershell
+bunclaw --help
+```
+
 ## OpenClaw 对比
 
 | 项目 | OpenClaw | BunClaw |
@@ -64,7 +108,8 @@ CLI / Web UI
 
 ### 1) 运行环境
 
-- Bun >= 1.3.x
+- 通过 npm 安装：无需额外准备 Bun
+- 从源码运行：Bun >= 1.3.x
 
 ### 2) 初始化
 
@@ -139,7 +184,7 @@ bun run bin/bunclaw.ts doctor
   "sessions": {
     "dbPath": "~/.bunclaw/bunclaw.db",
     "eventsPath": "~/.bunclaw/events.jsonl",
-    "workspace": "."
+    "workspace": "~/.bunclaw/workspace"
   },
   "storage": {
     "baseDir": "~/.bunclaw",
@@ -244,6 +289,40 @@ GitHub Action 自动发布 npm 的前置条件：
 ```bash
 bun run package:msi
 ```
+
+## GitHub 开源发布流程（建议）
+
+### 1) 准备仓库信息
+
+- `package.json` 包名使用组织作用域：`@idao-cube/bunclaw`
+- 仓库建议：`https://github.com/idao-cube/bunclaw`
+
+### 2) 配置 Secrets
+
+- `NPM_TOKEN`：npm 发布 token（对 `@idao-cube` 有 publish 权限）
+
+### 3) 发布版本
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+触发后 workflow 会自动：
+
+- 三平台跑测试
+- 构建多平台二进制
+- 构建 npm tarball
+- 构建 Windows MSI
+- 发布到 GitHub Releases
+- 发布到 npm（`@idao-cube/bunclaw`）
+
+## 常见问题（安装/发布）
+
+- `ENEEDAUTH`：通常是 `NPM_TOKEN` 缺失或权限不足（组织权限不够）。
+- `No files were found with dist/*.msi`：MSI 构建失败，查看 `Build MSI` 步骤日志。
+- Linux/macOS 二进制不可执行：先 `chmod +x`。
+- 双击二进制没启动网关：需要带子命令（如 `gateway`）。
 
 ## 开发与测试
 

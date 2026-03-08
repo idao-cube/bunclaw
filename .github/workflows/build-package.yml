@@ -86,8 +86,7 @@ jobs:
       - name: Build MSI
         shell: powershell
         run: |
-          $version = "${{ github.ref_name }}".TrimStart("v")
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-msi.ps1 -Version $version
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-msi.ps1 -Version "${{ github.ref_name }}"
 
       - name: List dist files (debug)
         shell: powershell

@@ -25,9 +25,42 @@ function Get-PackageVersion {
   return $pkg.version
 }
 
+function Normalize-WixVersion([string]$raw) {
+  if ([string]::IsNullOrWhiteSpace($raw)) {
+    throw "Version is empty."
+  }
+  $v = $raw.Trim()
+  if ($v.StartsWith("v")) { $v = $v.Substring(1) }
+  if ($v.Contains("-")) { $v = $v.Split("-")[0] }
+  if ($v.Contains("+")) { $v = $v.Split("+")[0] }
+
+  $parts = $v.Split(".")
+  if ($parts.Length -lt 2) {
+    throw "Invalid version '$raw'. Expected at least major.minor."
+  }
+  while ($parts.Length -lt 4) {
+    $parts = $parts + "0"
+  }
+  if ($parts.Length -gt 4) {
+    $parts = $parts[0..3]
+  }
+
+  foreach ($p in $parts) {
+    if ($p -notmatch '^\d+$') {
+      throw "Invalid numeric segment '$p' in version '$raw'."
+    }
+    $n = [int]$p
+    if ($n -lt 0 -or $n -gt 65534) {
+      throw "Version segment '$p' out of range (0..65534)."
+    }
+  }
+  return ($parts -join ".")
+}
+
 if ([string]::IsNullOrWhiteSpace($Version)) {
   $Version = Get-PackageVersion
 }
+$WixVersion = Normalize-WixVersion $Version
 
 if ([string]::IsNullOrWhiteSpace($ExePath)) {
   $candidate = Get-ChildItem -Path "dist" -Filter "bunclaw-bun-windows-x64*.exe" |
@@ -55,7 +88,15 @@ $wxs = Join-Path (Get-Location) "packaging/wix/BunClaw.wxs"
 $wixobj = Join-Path $outDir "BunClaw.wixobj"
 $msi = Join-Path $outDir ("BunClaw-" + $Version + "-x64.msi")
 
-& $candle.Source -nologo -ext WixUIExtension -dProductVersion=$Version -dSourceExe="$ExePath" -out "$wixobj" "$wxs"
+$candleArgs = @(
+  "-nologo",
+  "-ext", "WixUIExtension",
+  "-dProductVersion=$WixVersion",
+  "-dSourceExe=$ExePath",
+  "-out", $wixobj,
+  $wxs
+)
+& $candle.Source @candleArgs
 if ($LASTEXITCODE -ne 0) {
   throw "candle failed with exit code $LASTEXITCODE"
 }

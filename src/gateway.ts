@@ -960,6 +960,50 @@ function renderStatsPage(host: string, port: number, token: string, brandName: s
     const pending = new Map();
     const log = document.getElementById('statsLog');
     const systemBox = document.getElementById('statsSystem');
+    const keyLabel = {
+      platform: '平台',
+      arch: '架构',
+      bunVersion: 'Bun 版本',
+      pid: '进程 PID',
+      cwd: '当前目录',
+      workspace: '工作目录',
+      host: '网关 Host',
+      port: '网关 Port',
+      allowExternal: '允许外网',
+      model: '模型',
+      baseUrl: '模型地址',
+      memoryRss: '内存 RSS',
+      memoryHeapUsed: '堆内存',
+      dbBytes: '数据库大小',
+      eventsBytes: '事件日志大小',
+    };
+    const formatBytes = (n) => {
+      const v = Number(n || 0);
+      if (!Number.isFinite(v) || v <= 0) return '0 B';
+      const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      let x = v;
+      while (x >= 1024 && i < u.length - 1) { x /= 1024; i += 1; }
+      return (x >= 10 || i === 0 ? x.toFixed(0) : x.toFixed(1)) + ' ' + u[i];
+    };
+    const formatUptime = (sec) => {
+      let s = Number(sec || 0);
+      if (!Number.isFinite(s) || s < 0) s = 0;
+      const d = Math.floor(s / 86400); s %= 86400;
+      const h = Math.floor(s / 3600); s %= 3600;
+      const m = Math.floor(s / 60); s %= 60;
+      const parts = [];
+      if (d) parts.push(d + '天');
+      if (h) parts.push(h + '小时');
+      if (m) parts.push(m + '分');
+      parts.push(Math.floor(s) + '秒');
+      return parts.join(' ');
+    };
+    const formatSystemValue = (k, v) => {
+      if (k === 'memoryRss' || k === 'memoryHeapUsed' || k === 'dbBytes' || k === 'eventsBytes') return formatBytes(v);
+      if (k === 'allowExternal') return v ? '是' : '否';
+      return String(v ?? '');
+    };
     const print = (txt) => {
       log.textContent += '[' + new Date().toLocaleTimeString() + '] ' + txt + '\\n';
       log.scrollTop = log.scrollHeight;
@@ -977,10 +1021,10 @@ function renderStatsPage(host: string, port: number, token: string, brandName: s
       document.getElementById('statsMessages').textContent = String(s.messages ?? 0);
       document.getElementById('statsTokens').textContent = String(s.totalTokens ?? 0);
       document.getElementById('statsEvents').textContent = String(s.events ?? 0);
-      document.getElementById('statsUptime').textContent = String(s.uptimeSec ?? 0);
+      document.getElementById('statsUptime').textContent = formatUptime(s.uptimeSec ?? 0);
       const sys = s.system || {};
       const keys = Object.keys(sys);
-      systemBox.innerHTML = keys.map((k) => '<div class="sys-item"><div class="k">' + k + '</div><div class="v">' + String(sys[k]) + '</div></div>').join('');
+      systemBox.innerHTML = keys.map((k) => '<div class="sys-item"><div class="k">' + (keyLabel[k] || k) + '</div><div class="v">' + formatSystemValue(k, sys[k]) + '</div></div>').join('');
       print('统计已刷新');
     };
     ws.onopen = () => ws.send(JSON.stringify({ type:'connect', auth:{ token }, client:'bunclaw-stats' }));
