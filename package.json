@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "private": false,
   "description": "Pure Bun local agent control plane inspired by OpenClaw",
+  "homepage": "https://github.com/idao-cube/bunclaw#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/idao-cube/bunclaw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/idao-cube/bunclaw/issues"
+  },
+  "keywords": [
+    "bun",
+    "agent",
+    "gateway",
+    "openclaw",
+    "cli"
+  ],
   "license": "MIT",
   "bin": {
     "bunclaw": "bin/bunclaw.ts"

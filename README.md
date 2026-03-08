@@ -179,6 +179,14 @@ bun run pack:npm
 bun run package:msi
 ```
 
+### github 构建
+
+```
+git tag v0.1.0
+
+git push origin v0.1.0
+```
+
 ### 产物启动示例
 
 ```bash
@@ -217,6 +225,16 @@ bun run pack:npm
 # 正式发布
 bun run publish:npm
 ```
+
+组织发布目标：
+- npm scope：`@idao-cube`
+- 包名：`@idao-cube/bunclaw`
+- 地址：`https://www.npmjs.com/org/idao-cube`
+
+GitHub Action 自动发布 npm 的前置条件：
+- 在仓库 Secrets 配置 `NPM_TOKEN`
+- `NPM_TOKEN` 对 `@idao-cube` 组织具备发布权限
+- 推送版本标签（如 `v0.1.1`）后触发自动发布
 
 ### MSI
 
