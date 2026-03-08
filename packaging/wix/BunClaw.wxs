@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+    Id="*"
+    Name="BunClaw"
+    Language="1033"
+    Version="$(var.ProductVersion)"
+    Manufacturer="BunClaw"
+    UpgradeCode="1A7E3A9E-4A8D-4C98-A7E2-C0A4BCB8C9B1">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="MainFeature" Title="BunClaw" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <UIRef Id="WixUI_InstallDir" />
+  </Product>
+
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="BunClaw" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="BunClaw" />
+      </Directory>
+    </Directory>
+  </Fragment>
+
+  <Fragment>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="BunClawExeComponent" Guid="C5A3677D-FBE7-4BC8-955C-4EC859CDA998" Win64="yes">
+        <File Id="BunClawExeFile" Source="$(var.SourceExe)" KeyPath="yes" Name="bunclaw.exe" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuComponent" Guid="BFA8E7C5-D599-49DB-BF8F-AFD5A8AFCE09">
+        <Shortcut
+          Id="ApplicationStartMenuShortcut"
+          Name="BunClaw"
+          Description="BunClaw CLI"
+          Target="[INSTALLFOLDER]bunclaw.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\\BunClaw" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ProductComponents">
+      <ComponentRef Id="BunClawExeComponent" />
+      <ComponentRef Id="StartMenuComponent" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
+

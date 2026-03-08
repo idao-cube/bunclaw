@@ -171,6 +171,12 @@ bun run package
 
 # 多平台
 bun run package:all
+
+# 生成 npm 安装包（tgz）
+bun run pack:npm
+
+# 生成 MSI（需 Windows + WiX 3）
+bun run package:msi
 ```
 
 ### 产物启动示例
@@ -195,9 +201,31 @@ chmod +x ./dist/bunclaw-bun-darwin-arm64
 工作流：`.github/workflows/build-package.yml`
 
 - 三平台矩阵测试（Windows/macOS/Linux）
-- Ubuntu 执行 `package:all` 产出多平台二进制
-- 自动上传 `dist/*` 构建产物
-- 当推送 `v*` 标签时，自动创建/更新 GitHub Release 并附带 `dist/*` 二进制
+- Ubuntu 执行 `package:all` + `pack:npm`
+- Windows 执行 `package:msi`
+- 仅在推送 `v*` 标签（或手动触发）时执行
+- 推送 `v*` 标签后自动发布到 GitHub Releases（包含二进制、`.tgz`、`.msi`）
+
+## npm / MSI 发布说明
+
+### npm
+
+```bash
+# 先检查 tgz
+bun run pack:npm
+
+# 正式发布
+bun run publish:npm
+```
+
+### MSI
+
+- 依赖：WiX Toolset 3（`candle.exe` / `light.exe`）
+- 本地构建：
+
+```bash
+bun run package:msi
+```
 
 ## 开发与测试
 

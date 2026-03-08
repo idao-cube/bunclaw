@@ -1,13 +1,29 @@
 ﻿{
-  "name": "bunclaw",
+  "name": "@idao-cube/bunclaw",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "description": "Pure Bun local agent control plane inspired by OpenClaw",
+  "license": "MIT",
+  "bin": {
+    "bunclaw": "bin/bunclaw.ts"
+  },
+  "files": [
+    "bin",
+    "src",
+    "scripts",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "scripts": {
     "test": "bun test",
     "start": "bun run bin/bunclaw.ts",
     "package": "bun run scripts/package.ts",
-    "package:all": "bun run scripts/package-all.ts"
+    "package:all": "bun run scripts/package-all.ts",
+    "pack:npm": "powershell -NoProfile -Command \"New-Item -ItemType Directory -Path dist/npm -Force | Out-Null\"; npm pack --pack-destination dist/npm",
+    "publish:npm": "npm publish --access public",
+    "package:msi": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-msi.ps1"
   }
 }
-
