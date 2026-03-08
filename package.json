@@ -1,0 +1,13 @@
+﻿{
+  "name": "bunclaw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "start": "bun run bin/bunclaw.ts",
+    "package": "bun run scripts/package.ts",
+    "package:all": "bun run scripts/package-all.ts"
+  }
+}
+

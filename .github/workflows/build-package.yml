@@ -1,0 +1,48 @@
+name: build-package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: 运行测试
+        run: bun test
+
+  package-all:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: 多平台一键打包
+        run: bun run package:all
+      - name: Linux 二进制启动验证
+        run: |
+          chmod +x dist/bunclaw-bun-linux-x64
+          ./dist/bunclaw-bun-linux-x64 --help
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bunclaw-all-targets
+          path: dist/*
+          if-no-files-found: error
+

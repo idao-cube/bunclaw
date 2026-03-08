@@ -1,0 +1,40 @@
+{
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 16789,
+    "token": ""
+  },
+  "_model": {
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKey": "",
+    "model": "gpt-4.1-mini",
+    "maxToolRounds": 4
+  },
+  "model": {
+    "baseUrl": "http://127.0.0.1:11434/v1",
+    "apiKey": "123456",
+    "model": "qwen3.5:0.8b",
+    "maxToolRounds": 4
+  },
+  "tools": {
+    "profile": "coding",
+    "allow": [],
+    "deny": [],
+    "webSearch": {
+      "provider": "",
+      "endpoint": "",
+      "apiKey": ""
+    }
+  },
+  "sessions": {
+    "dbPath": ".bunclaw/bunclaw.db",
+    "eventsPath": ".bunclaw/events.jsonl",
+    "workspace": "C:\\woorkspace\\bunclaw"
+  },
+  "security": {
+    "workspaceOnly": true
+  },
+  "ui": {
+    "brandName": "BunClaw Pro"
+  }
+}
