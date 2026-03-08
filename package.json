@@ -1,6 +1,6 @@
 ﻿{
   "name": "@idao-cube/bunclaw",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": false,
   "description": "Pure Bun local agent control plane inspired by OpenClaw",
   "homepage": "https://github.com/idao-cube/bunclaw#readme",
