@@ -40,6 +40,8 @@ describe("web ui", () => {
     expect(html.includes("location.host")).toBe(true);
     expect(html.includes("app-shell")).toBe(true);
     expect(html.includes("ws.readyState")).toBe(true);
+    expect(html.includes("webToggle")).toBe(false);
+    expect(html.includes("联网搜索开关")).toBe(false);
     expect(html.includes("overflow:hidden")).toBe(true);
     expect(html.includes("--bg:#0f0f11")).toBe(true);
   });
@@ -90,6 +92,8 @@ describe("web ui", () => {
     expect(html.includes("stats.usage")).toBe(true);
     expect(html.includes("statsSessions")).toBe(true);
     expect(html.includes("statsSystem")).toBe(true);
+    expect(html.includes("工作目录")).toBe(false);
+    expect(html.includes("当前目录")).toBe(false);
     expect(html.includes("sys-grid")).toBe(true);
   });
 
@@ -99,9 +103,12 @@ describe("web ui", () => {
     const html = await res.text();
     expect(html.includes("技能管理")).toBe(true);
     expect(html.includes("skill.list")).toBe(true);
-    expect(html.includes("skill.save")).toBe(true);
-    expect(html.includes("skill.delete")).toBe(true);
+    expect(html.includes("skill.save")).toBe(false);
+    expect(html.includes("skill.delete")).toBe(false);
     expect(html.includes("skillContent")).toBe(true);
+    expect(html.includes("skillNew")).toBe(false);
+    expect(html.includes("skillSave")).toBe(false);
+    expect(html.includes("skillInsert")).toBe(false);
     expect(html.includes("menu-skills")).toBe(true);
   });
 });

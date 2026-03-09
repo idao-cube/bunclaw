@@ -57,6 +57,26 @@ chmod +x ./bunclaw-bun-darwin-arm64
 ./bunclaw-bun-darwin-arm64 gateway
 ```
 
+### 2.1) Linux/macOS 一键安装（GitHub Releases）
+
+发布后可直接执行安装脚本（自动识别平台与架构）：
+
+```bash
+curl -fsSL https://github.com/idao-cube/bunclaw/releases/latest/download/install-unix.sh | sh
+```
+
+指定版本示例：
+
+```bash
+curl -fsSL https://github.com/idao-cube/bunclaw/releases/latest/download/install-unix.sh | sh -s -- v0.2.5
+```
+
+说明：
+
+- 优先安装到 `/usr/local/bin`（可写时）
+- 无权限时自动回退到 `~/.local/bin`
+- 回退场景会自动写入 shell rc（如 `~/.bashrc` / `~/.zshrc`）以补全 `PATH`
+
 ### 3) MSI 安装（Windows）
 
 从 Releases 下载 `BunClaw-<version>-x64.msi`，双击安装后使用：
@@ -314,6 +334,7 @@ chmod +x ./dist/bunclaw-bun-darwin-arm64
 
 - 三平台矩阵测试（Windows/macOS/Linux）
 - Ubuntu 执行 `package:all` + `pack:npm`
+- Ubuntu 额外产出 Unix 安装资产（`install-unix.sh` + `bunclaw-*.tar.gz`）
 - Windows 执行 `package:msi`
 - 仅在推送 `v*` 标签（或手动触发）时执行
 - 推送 `v*` 标签后自动发布到 GitHub Releases（包含二进制、`.tgz`、`.msi`）

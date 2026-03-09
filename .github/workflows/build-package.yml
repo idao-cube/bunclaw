@@ -53,12 +53,29 @@ jobs:
           chmod +x dist/bunclaw-bun-linux-x64
           ./dist/bunclaw-bun-linux-x64 --help
 
+      - name: Prepare Unix install assets
+        run: |
+          chmod +x scripts/install-unix.sh
+          cp scripts/install-unix.sh dist/install-unix.sh
+
+          for target in bun-linux-x64 bun-linux-arm64 bun-darwin-x64 bun-darwin-arm64; do
+            bin="dist/bunclaw-${target}"
+            if [ -f "$bin" ]; then
+              tmpdir="$(mktemp -d)"
+              cp "$bin" "$tmpdir/bunclaw"
+              chmod +x "$tmpdir/bunclaw"
+              tar -C "$tmpdir" -czf "dist/bunclaw-${target}.tar.gz" bunclaw
+              rm -rf "$tmpdir"
+            fi
+          done
+
       - name: Upload binaries artifact
         uses: actions/upload-artifact@v4
         with:
           name: bunclaw-binaries
           path: |
             dist/bunclaw-*
+            dist/install-unix.sh
             dist/npm/*.tgz
           if-no-files-found: error
 

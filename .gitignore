@@ -2,4 +2,4 @@
 .tmp-test-db/
 .tmp-*
 temp/
-dist
+dist/

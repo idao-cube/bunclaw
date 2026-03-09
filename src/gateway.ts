@@ -375,8 +375,6 @@ async function handleMethod(
         arch: process.arch,
         bunVersion: Bun.version,
         pid: process.pid,
-        cwd: process.cwd(),
-        workspace: deps.config.sessions.workspace,
         host: deps.config.gateway.host,
         port: deps.config.gateway.port,
         allowExternal: Boolean(deps.config.gateway.allowExternal),
@@ -625,11 +623,6 @@ function renderSharedStyle(): string {
     .chat-bar-btn { width:42px; height:42px; margin:0; padding:0; border-radius:10px; font-size:22px; display:flex; align-items:center; justify-content:center; cursor:pointer; background:rgba(255,255,255,.12); color:var(--ink); border:1px solid var(--line); flex-shrink:0; }
     .chat-bar-btn:hover { background:rgba(255,255,255,.22); }
     .chat-bar-select { width:auto; min-width:80px; height:42px; margin:0; padding:4px 8px; border-radius:10px; background:rgba(255,255,255,.10); color:var(--ink); border:1px solid var(--line); font-size:13px; cursor:pointer; appearance:auto; flex-shrink:0; }
-    .web-toggle { display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none; flex-shrink:0; height:42px; padding:0 8px; border-radius:10px; background:rgba(255,255,255,.08); border:1px solid var(--line); }
-    .web-toggle input { display:none; }
-    .web-toggle-label { font-size:18px; opacity:.5; transition:opacity .15s; }
-    .web-toggle input:checked + .web-toggle-label { opacity:1; }
-    .web-toggle:has(input:checked) { background:rgba(80,180,255,.18); border-color:rgba(80,180,255,.45); }
     .attach-preview { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
     .attach-preview:empty { display:none; }
     .attach-item { display:flex; align-items:center; gap:4px; background:rgba(255,255,255,.10); border:1px solid var(--line); border-radius:8px; padding:4px 8px; font-size:12px; color:var(--muted); }
@@ -677,8 +670,6 @@ function renderSharedStyle(): string {
     .theme-light .chat-bar-btn { background:rgba(0,0,0,.06); color:#0f1115; border-color:rgba(15,18,24,.18); }
     .theme-light .chat-bar-btn:hover { background:rgba(0,0,0,.12); }
     .theme-light .chat-bar-select { background:rgba(0,0,0,.04); color:#0f1115; border-color:rgba(15,18,24,.18); }
-    .theme-light .web-toggle { background:rgba(0,0,0,.04); border-color:rgba(15,18,24,.18); }
-    .theme-light .web-toggle:has(input:checked) { background:rgba(30,120,220,.12); border-color:rgba(30,120,220,.4); }
     .theme-light .attach-item { background:rgba(0,0,0,.05); border-color:rgba(15,18,24,.14); }
     .theme-light .chat-action.is-abort { background:linear-gradient(180deg,#fca5a5,#ef4444); color:#fff; }
     .theme-light .skill-suggest { background:rgba(255,255,255,.92); border-color:rgba(15,18,24,.16); }
@@ -753,10 +744,6 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
             <select id="toolSelect" class="chat-bar-select" title="技能/工具" style="display:none">
               <option value="">🔧 工具</option>
             </select>
-            <label class="web-toggle" title="联网搜索开关">
-              <input id="webToggle" type="checkbox" checked />
-              <span class="web-toggle-label">🌐</span>
-            </label>
             <button id="sendBtn" class="chat-action" title="发送/暂停">发送</button>
           </div>
         </div>
@@ -774,7 +761,6 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
     const fileInput = document.getElementById('fileInput');
     const attachPreview = document.getElementById('attachPreview');
     const toolSelect = document.getElementById('toolSelect');
-    const webToggle = document.getElementById('webToggle');
     const attachments = [];
     const applyTheme = (theme) => {
       document.body.classList.toggle('theme-light', theme === 'light');
@@ -966,9 +952,6 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
     };
     const buildMessage = (text) => {
       let msg = text;
-      if (webToggle.checked) {
-        msg = '[联网搜索] ' + msg;
-      }
       const sentImages = [];
       if (attachments.length > 0) {
         const parts = attachments.map((a) => {
@@ -1292,20 +1275,16 @@ function renderSkillsPage(host: string, port: number, token: string, brandName: 
         <h2 class="section-title">技能管理</h2>
         <div class="hint">技能文件位置：<code>.bunclaw/skills</code>，聊天可用 <code>@技能名</code> 或 <code>/技能名</code> 调用。</div>
         <div class="chat-input-wrap">
-          <input id="skillName" placeholder="技能名（如 netdiag）" />
-          <button id="skillNew" class="chat-action btn-secondary">新建</button>
           <button id="skillRefresh" class="chat-action btn-secondary">刷新</button>
-          <button id="skillDelete" class="chat-action btn-danger">删除</button>
         </div>
         <div class="chat-input-wrap" style="margin-top:8px;">
           <input id="skillFilter" placeholder="筛选技能..." />
           <div class="send-status"></div>
-          <button id="skillSave" class="chat-action">保存</button>
-          <button id="skillInsert" class="chat-action btn-secondary">插入模板</button>
         </div>
         <div class="hint" id="skillCount">技能列表：0</div>
+        <div class="hint" id="skillSelected">当前技能：-</div>
         <pre id="skillList" class="log-box"></pre>
-        <textarea id="skillContent" class="raw-config" spellcheck="false" placeholder="# 技能说明"></textarea>
+        <textarea id="skillContent" class="raw-config" spellcheck="false" placeholder="# 技能说明" readonly></textarea>
         <pre id="skillLog"></pre>
       </div>
     </div>
@@ -1325,12 +1304,12 @@ function renderSkillsPage(host: string, port: number, token: string, brandName: 
     const ws = new WebSocket(wsUrl);
     const token = ${JSON.stringify(token)};
     const pending = new Map();
-    const skillName = document.getElementById('skillName');
     const skillFilter = document.getElementById('skillFilter');
     const skillList = document.getElementById('skillList');
     const skillContent = document.getElementById('skillContent');
     const skillLog = document.getElementById('skillLog');
     const skillCount = document.getElementById('skillCount');
+    const skillSelected = document.getElementById('skillSelected');
     let allSkills = [];
 
     const print = (txt) => {
@@ -1359,26 +1338,10 @@ function renderSkillsPage(host: string, port: number, token: string, brandName: 
       if (!n) return;
       const res = await req('skill.get', { name: n });
       if (!res.ok) throw new Error(res.error?.message || '读取技能失败');
-      skillName.value = res.payload.name || n;
+      const selectedName = res.payload.name || n;
       skillContent.value = res.payload.content || '';
-      print('已加载技能：' + skillName.value);
-    };
-    const saveSkill = async () => {
-      const n = String(skillName.value || '').trim();
-      if (!n) throw new Error('请先填写技能名');
-      const res = await req('skill.save', { name: n, content: String(skillContent.value || '') });
-      if (!res.ok) throw new Error(res.error?.message || '保存技能失败');
-      print('已保存：' + n);
-      await loadSkills();
-    };
-    const delSkill = async () => {
-      const n = String(skillName.value || '').trim();
-      if (!n) throw new Error('请先填写技能名');
-      const res = await req('skill.delete', { name: n });
-      if (!res.ok) throw new Error(res.error?.message || '删除失败');
-      print('已删除：' + n);
-      skillContent.value = '';
-      await loadSkills();
+      skillSelected.textContent = '当前技能：' + selectedName;
+      print('已加载技能：' + selectedName);
     };
     ws.onopen = () => ws.send(JSON.stringify({ type:'connect', auth:{ token }, client:'bunclaw-skills' }));
     ws.onmessage = async (ev) => {
@@ -1402,11 +1365,6 @@ function renderSkillsPage(host: string, port: number, token: string, brandName: 
       try { await loadSkill(m[1]); } catch (e) { print(String(e.message || e)); }
     };
     document.getElementById('skillRefresh').onclick = async () => { try { await loadSkills(); } catch (e) { print(String(e.message || e)); } };
-    document.getElementById('skillNew').onclick = () => { skillName.value = ''; skillContent.value = '# 技能名称\\n\\n## 目标\\n- 描述这个技能做什么\\n'; };
-    document.getElementById('skillInsert').onclick = () => { skillContent.value += '\\n## 使用约束\\n- 仅在满足条件时执行\\n'; };
-    document.getElementById('skillSave').onclick = async () => { try { await saveSkill(); } catch (e) { print(String(e.message || e)); } };
-    document.getElementById('skillDelete').onclick = async () => { try { await delSkill(); } catch (e) { print(String(e.message || e)); } };
-    skillName.addEventListener('change', async () => { try { await loadSkill(skillName.value); } catch { /* ignore */ } });
   </script>
 </body>
 </html>`;
@@ -1682,8 +1640,6 @@ function renderStatsPage(host: string, port: number, token: string, brandName: s
       arch: '架构',
       bunVersion: 'Bun 版本',
       pid: '进程 PID',
-      cwd: '当前目录',
-      workspace: '工作目录',
       host: '网关 Host',
       port: '网关 Port',
       allowExternal: '允许外网',

@@ -35,6 +35,19 @@
       <Component Id="BunClawExeComponent" Guid="C5A3677D-FBE7-4BC8-955C-4EC859CDA998" Win64="yes">
         <File Id="BunClawExeFile" Source="$(var.SourceExe)" KeyPath="yes" Name="bunclaw.exe" />
       </Component>
+
+      <Component Id="PathEnvComponent" Guid="7A3D61A5-8D38-4564-A4E6-11E093A66E15" Win64="yes">
+        <!-- Append the runtime install directory to machine PATH and remove it on uninstall. -->
+        <Environment
+          Id="BunClawInstallFolderPath"
+          Name="PATH"
+          Value="[INSTALLFOLDER]"
+          Part="last"
+          Action="set"
+          System="yes"
+          Permanent="no" />
+        <RegistryValue Root="HKLM" Key="Software\BunClaw" Name="path-installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
     </DirectoryRef>
 
     <DirectoryRef Id="ApplicationProgramsFolder">
@@ -54,6 +67,7 @@
   <Fragment>
     <ComponentGroup Id="ProductComponents">
       <ComponentRef Id="BunClawExeComponent" />
+      <ComponentRef Id="PathEnvComponent" />
       <ComponentRef Id="StartMenuComponent" />
     </ComponentGroup>
   </Fragment>
