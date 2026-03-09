@@ -23,7 +23,7 @@ describe("默认目录", () => {
     const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     const cfg = defaultConfig();
     const sep = process.platform === "win32" ? "\\" : "/";
-    const base = `${process.cwd()}${sep}.tmp-workspace-${id}`;
+    const base = `${process.cwd()}${sep}temp${sep}.tmp-workspace-${id}`;
     cfg.sessions.workspace = base;
     cfg.sessions.dbPath = `${base}${sep}bunclaw.db`;
     cfg.sessions.eventsPath = `${base}${sep}events.jsonl`;
@@ -41,7 +41,7 @@ describe("默认目录", () => {
 
   test("旧配置中的仓库内 .bunclaw/workspace 应自动迁移到用户目录", async () => {
     const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-    const p = `${process.cwd()}${process.platform === "win32" ? "\\" : "/"} .tmp-cfg-${id}.json`.replace(" ", "");
+    const p = `${process.cwd()}${process.platform === "win32" ? "\\" : "/"}temp${process.platform === "win32" ? "\\" : "/"}.tmp-cfg-${id}.json`;
     const cfg = defaultConfig();
     cfg.sessions.workspace = ".bunclaw/workspace";
     await Bun.write(p, `${JSON.stringify(cfg, null, 2)}\n`);
@@ -54,7 +54,7 @@ describe("默认目录", () => {
   test("旧配置中的仓库绝对 workspace 应自动迁移到用户目录", async () => {
     const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     const sep = process.platform === "win32" ? "\\" : "/";
-    const p = `${process.cwd()}${sep}.tmp-cfg-${id}-2.json`;
+    const p = `${process.cwd()}${sep}temp${sep}.tmp-cfg-${id}-2.json`;
     const cfg = defaultConfig();
     cfg.sessions.workspace = `${process.cwd()}${sep}workspace`;
     await Bun.write(p, `${JSON.stringify(cfg, null, 2)}\n`);

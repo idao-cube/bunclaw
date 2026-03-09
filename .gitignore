@@ -1,4 +1,5 @@
 .bunclaw/
 .tmp-test-db/
 .tmp-*
+temp/
 dist

@@ -6,6 +6,8 @@ describe("新闻查询意图识别", () => {
     expect(shouldForceWebResearch("2026年3月8日最新消息")).toBe(true);
     expect(shouldForceWebResearch("今天科技新闻头条")).toBe(true);
     expect(shouldForceWebResearch("帮我联网搜索今天的 AI 资讯")).toBe(true);
+    expect(shouldForceWebResearch("今日国际黄金价格")).toBe(true);
+    expect(shouldForceWebResearch("黄金实时行情")).toBe(true);
   });
 
   test("普通编码请求不应强制联网搜索", () => {

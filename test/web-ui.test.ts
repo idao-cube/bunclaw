@@ -3,7 +3,7 @@ import { startGateway } from "../src/gateway";
 
 let gateway: ReturnType<typeof Bun.serve>;
 const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-const configPath = `.tmp-ui-${id}.json`;
+const configPath = `temp/.tmp-ui-${id}.json`;
 const port = 24000 + Math.floor(Math.random() * 1000);
 
 describe("web ui", () => {
@@ -13,7 +13,7 @@ describe("web ui", () => {
       model: { baseUrl: "http://127.0.0.1:25001/v1", apiKey: "x", model: "x", maxToolRounds: 1 },
       tools: { profile: "coding", allow: [], deny: [] },
       ui: { brandName: "BunClaw Pro" },
-      sessions: { dbPath: `.tmp-ui-${id}.db`, eventsPath: `.tmp-ui-${id}.jsonl`, workspace: process.cwd() },
+      sessions: { dbPath: `temp/.tmp-ui-${id}.db`, eventsPath: `temp/.tmp-ui-${id}.jsonl`, workspace: process.cwd() },
       security: { workspaceOnly: true },
     };
     await Bun.write(configPath, JSON.stringify(cfg, null, 2));
@@ -33,7 +33,6 @@ describe("web ui", () => {
     expect(html.includes("chat-thread")).toBe(true);
     expect(html.includes("chat-input")).toBe(true);
     expect(html.includes("bubble")).toBe(true);
-    expect(html.includes("clearAllBtn")).toBe(true);
     expect(html.includes("menu-config")).toBe(true);
     expect(html.includes("menu-stats")).toBe(true);
     expect(html.includes("header-endpoint")).toBe(true);
@@ -80,6 +79,7 @@ describe("web ui", () => {
     expect(html.includes("system.config.file.save")).toBe(true);
     expect(html.includes("system.config.update")).toBe(true);
     expect(html.includes("raw-config")).toBe(true);
+    expect(html.includes("clearAllBtn")).toBe(true);
   });
 
   test("GET /stats returns stats page", async () => {

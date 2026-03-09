@@ -6,14 +6,32 @@ import { runTool, type ToolContext } from "./tools/index";
 import { streamChatCompletion, type ModelMessage, type ToolDef } from "./model/openai";
 
 const TOOL_SCHEMAS: Record<string, ToolDef> = {
-  read: { type: "function", function: { name: "read", description: "读取工作目录文件", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-  write: { type: "function", function: { name: "write", description: "写入文件", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
-  edit: { type: "function", function: { name: "edit", description: "替换文件文本", parameters: { type: "object", properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" } }, required: ["path", "find", "replace"] } } },
-  apply_patch: { type: "function", function: { name: "apply_patch", description: "覆盖文件内容", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
-  exec: { type: "function", function: { name: "exec", description: "执行命令", parameters: { type: "object", properties: { command: { type: "string" }, background: { type: "boolean" } }, required: ["command"] } } },
-  process: { type: "function", function: { name: "process", description: "管理后台任务", parameters: { type: "object", properties: { action: { type: "string" }, sessionId: { type: "string" } }, required: ["action"] } } },
-  web_search: { type: "function", function: { name: "web_search", description: "多引擎联网搜索（免 Key，失败源自动跳过）", parameters: { type: "object", properties: { query: { type: "string" }, count: { type: "number" }, providers: { type: "array", items: { type: "string" } } }, required: ["query"] } } },
-  web_fetch: { type: "function", function: { name: "web_fetch", description: "抓取网页文本", parameters: { type: "object", properties: { url: { type: "string" }, maxChars: { type: "number" } }, required: ["url"] } } },
+  read: { type: "function", function: { name: "read", description: "读取工作目录中的文件内容，返回文件文本", parameters: { type: "object", properties: { path: { type: "string", description: "相对路径，如 hello.txt 或 sub/file.md" } }, required: ["path"] } } },
+  write: { type: "function", function: { name: "write", description: "在工作目录中创建或覆盖文件。用户要求创建文件时必须调用此工具", parameters: { type: "object", properties: { path: { type: "string", description: "相对路径，如 help.txt" }, content: { type: "string", description: "文件的完整内容" } }, required: ["path", "content"] } } },
+  edit: { type: "function", function: { name: "edit", description: "在已有文件中查找并替换文本片段", parameters: { type: "object", properties: { path: { type: "string" }, find: { type: "string", description: "要查找的原文" }, replace: { type: "string", description: "替换为的新文本" } }, required: ["path", "find", "replace"] } } },
+  apply_patch: { type: "function", function: { name: "apply_patch", description: "用新内容完全覆盖文件", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
+  exec: { type: "function", function: { name: "exec", description: "在系统 shell 中执行命令并返回输出", parameters: { type: "object", properties: { command: { type: "string", description: "要执行的命令" }, background: { type: "boolean", description: "是否后台运行" } }, required: ["command"] } } },
+  process: { type: "function", function: { name: "process", description: "管理后台任务（list/poll/kill）", parameters: { type: "object", properties: { action: { type: "string" }, sessionId: { type: "string" } }, required: ["action"] } } },
+  web_search: {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "多引擎联网搜索（免 Key，失败源自动跳过），支持按专业站点定向检索",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          count: { type: "number" },
+          providers: { type: "array", items: { type: "string" } },
+          strictProviders: { type: "boolean", description: "是否严格按 providers 顺序与集合执行；默认 false" },
+          sites: { type: "array", items: { type: "string" }, description: "定向站点域名，如 [\"github.com\",\"openclaw.ai\"]" },
+          categories: { type: "array", items: { type: "string" }, description: "站点分类，如 [\"government\",\"education\",\"research\",\"media\",\"forum\",\"social\",\"tech\"]" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  web_fetch: { type: "function", function: { name: "web_fetch", description: "抓取指定 URL 的网页文本内容", parameters: { type: "object", properties: { url: { type: "string" }, maxChars: { type: "number" } }, required: ["url"] } } },
 };
 
 export async function runAgent(params: {
@@ -24,8 +42,11 @@ export async function runAgent(params: {
   sessionKey: string;
   message: string;
   onEvent: (event: string, payload: unknown) => void;
+  abortSignal?: AbortSignal;
+  onRunId?: (runId: string) => void;
 }): Promise<{ runId: string; sessionId: string; output: string; tokens: number }> {
   const runId = crypto.randomUUID();
+  if (params.onRunId) params.onRunId(runId);
   const session = params.db.createSession(params.sessionKey);
   const skillCtx = await resolveSkillContext(params.message, params.config.storage?.skillsDir || "");
   params.db.insertMessage(session.id, "user", params.message, {
@@ -100,13 +121,30 @@ export async function runAgent(params: {
   const toolDefs = [...allowed].map((name) => TOOL_SCHEMAS[name]).filter(Boolean);
   const history = params.db.listMessages(session.id, 20);
   const messages: ModelMessage[] = history.map((m) => ({ role: m.role as ModelMessage["role"], content: m.content }));
+  // 使用清洗后的用户消息，避免把 @skill 引用标记直接发送给模型。
+  if (skillCtx.cleanedMessage && skillCtx.cleanedMessage !== params.message) {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === "user") {
+        messages[i] = { ...messages[i], content: skillCtx.cleanedMessage };
+        break;
+      }
+    }
+  }
   if (skillCtx.systemPrompt) {
     messages.unshift({ role: "system", content: skillCtx.systemPrompt });
+  } else {
+    messages.unshift({ role: "system", content: "你是一个具备工具调用能力的智能助手。当用户要求创建文件、写入文件时，你必须调用 write 工具来完成，不要只用文字描述。当用户要求读取文件时，调用 read 工具。当用户要求执行命令时，调用 exec 工具。请始终使用中文回答，回答应清晰、准确、有帮助。" });
   }
 
   let final = "";
   let finalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-  for (let round = 0; round <= params.config.model.maxToolRounds; round += 1) {
+  const maxToolRounds = Math.max(0, Number(params.config.model.maxToolRounds ?? 0));
+  let usedToolRounds = 0;
+  while (true) {
+    if (params.abortSignal?.aborted) {
+      final = "（已中断）";
+      break;
+    }
     const result = await streamChatCompletion({
       config: params.config,
       messages,
@@ -117,13 +155,24 @@ export async function runAgent(params: {
     });
     finalUsage = result.usage;
 
+    if (params.abortSignal?.aborted) {
+      final = result.text || "（已中断）";
+      break;
+    }
+
     if (!result.toolCalls.length) {
       final = result.text;
       break;
     }
 
+    if (usedToolRounds >= maxToolRounds) {
+      final = result.text || "（达到工具调用轮次上限）";
+      break;
+    }
+
     messages.push({ role: "assistant", content: result.text || "" });
     for (const call of result.toolCalls) {
+      if (params.abortSignal?.aborted) break;
       const name = call.name;
       const args = safeJsonParse(call.arguments);
       let output: unknown;
@@ -139,6 +188,7 @@ export async function runAgent(params: {
       params.onEvent("agent.tool", { runId, tool: name, args, output });
       messages.push({ role: "tool", tool_call_id: call.id, name, content: JSON.stringify(output) });
     }
+    usedToolRounds += 1;
   }
 
   if (!final) final = "（模型未返回文本）";
@@ -282,7 +332,7 @@ async function runForcedWebResearch(input: {
   onEvent: (event: string, payload: unknown) => void;
   canFetch: boolean;
 }): Promise<string> {
-  const searchArgs = { query: input.query, count: 10, providers: ["news", "media", "bing", "google", "baidu", "github"] };
+  const searchArgs = { query: input.query, count: 10, providers: ["custom", "news", "media", "bing", "google", "duckduckgo", "baidu", "sogou", "so", "github"] };
   let searchOutput: any;
   try {
     searchOutput = await runTool("web_search", searchArgs, input.toolCtx);
@@ -318,22 +368,32 @@ async function runForcedWebResearch(input: {
 
 function formatResearchOutput(query: string, searchOutput: any, top: any[], details: Array<{ title: string; url: string; source: string; content: string }>): string {
   const now = new Date().toISOString();
+  const marketIntent = /(黄金|金价|白银|银价|原油|油价|汇率|外汇|比特币|btc|eth|纳斯达克|道琼斯|上证|深证|恒生|行情|报价|现价|涨跌)/i.test(query);
   const lines: string[] = [];
-  lines.push(`已按“联网搜索+抓取”模式执行（非模型臆测）。`);
-  lines.push(`查询：${query}`);
-  lines.push(`抓取时间：${now}`);
+  lines.push(marketIntent ? "聚合行情检索报告（联网）" : "聚合联网检索报告");
+  lines.push(`查询: ${query}`);
+  lines.push(`生成时间: ${now}`);
   lines.push("");
   const ok = Array.isArray(searchOutput?.providersSucceeded) ? searchOutput.providersSucceeded : [];
   const tried = Array.isArray(searchOutput?.providersTried) ? searchOutput.providersTried : [];
   const errs = Array.isArray(searchOutput?.errors) ? searchOutput.errors : [];
-  lines.push(`搜索源：${ok.length > 0 ? ok.join(", ") : "无成功源"}（尝试：${tried.join(", ")}）`);
-  if (errs.length > 0) lines.push(`失败源：${errs.map((e: any) => `${e.provider}:${String(e.message || "").slice(0, 60)}`).join(" | ")}`);
+  const searchedAt = typeof searchOutput?.searchedAt === "string" ? searchOutput.searchedAt : now;
+  const intent = Array.isArray(searchOutput?.intent) ? searchOutput.intent.map((x: unknown) => String(x || "")).filter(Boolean) : [];
+  lines.push(`检索时间戳: ${searchedAt}`);
+  if (intent.length > 0) lines.push(`检索意图: ${intent.join(", ")}`);
+  lines.push(`成功搜索源: ${ok.length > 0 ? ok.join(", ") : "无"}`);
+  lines.push(`尝试搜索源: ${tried.length > 0 ? tried.join(", ") : "无"}`);
+  if (errs.length > 0) lines.push(`失败源: ${errs.map((e: any) => `${e.provider}:${String(e.message || "").slice(0, 60)}`).join(" | ")}`);
   lines.push("");
   if (top.length === 0) {
-    lines.push("未检索到有效结果，请更换关键词后重试。");
+    lines.push("结论: 未检索到有效结果，请更换关键词后重试。");
     return lines.join("\n");
   }
-  lines.push("检索结果：");
+  if (marketIntent) {
+    lines.push("时效提示: 行情信息随市场实时变化，请以交易所/官方报价终端为准。");
+    lines.push("");
+  }
+  lines.push("结果汇总:");
   top.forEach((r: any, i: number) => {
     lines.push(`${i + 1}. ${String(r.title || "未命名")} [${String(r.source || r.provider || "unknown")}]`);
     lines.push(`   ${String(r.url || "")}`);
@@ -341,13 +401,15 @@ function formatResearchOutput(query: string, searchOutput: any, top: any[], deta
   });
   if (details.length > 0) {
     lines.push("");
-    lines.push("页面抓取摘要：");
+    lines.push("页面抓取摘要:");
     details.forEach((d, i) => {
       lines.push(`${i + 1}. ${d.title} [${d.source}]`);
       if (d.content) lines.push(`   ${d.content}`);
       lines.push(`   ${d.url}`);
     });
   }
+  lines.push("");
+  lines.push("结论: 以上内容来自多源聚合检索，已尽量优先近期与专业来源。");
   return lines.join("\n");
 }
 
@@ -362,6 +424,11 @@ export function shouldForceWebResearch(message: string): boolean {
   const hasDate = /(\d{4}年\d{1,2}月\d{1,2}日)|(\d{4}-\d{1,2}-\d{1,2})|(\d{1,2}月\d{1,2}日)/.test(text);
   const hasNewsTopic = /(消息|新闻|资讯|发布|公告|政策|价格|汇率|股价|比赛|比分|赛程|天气|票房|销量|排行|榜单|版本更新|release note)/i.test(text);
   if ((hasTemporal && hasNewsTopic) || (hasDate && hasNewsTopic)) return true;
+
+  // 金融/大宗商品实时行情默认走联网，避免模型离线臆测时效数据。
+  const hasFinanceTopic = /(黄金|金价|白银|银价|原油|油价|美元|美债|汇率|外汇|比特币|btc|eth|纳斯达克|道琼斯|上证|深证|恒生)/i.test(text);
+  const hasQuoteIntent = /(价格|行情|走势|报价|现价|收盘|开盘|涨跌|点位)/i.test(text);
+  if ((hasFinanceTopic && hasQuoteIntent) || (hasFinanceTopic && hasTemporal)) return true;
 
   const localTask = /(本地|项目内|项目中|工程内|工程中|本项目|仓库|workspace|工作目录|代码|文件|目录|src|readme|日志|数据库|执行|run|命令|shell|终端|创建|修改|删除|重命名)/i.test(text);
   if (localTask) return false;

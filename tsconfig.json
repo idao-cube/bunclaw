@@ -5,9 +5,10 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
-    "types": ["bun-types"],
+    "types": [],
+    "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["src", "bin", "test"]
+  "include": ["src", "bin", "test", "scripts"]
 }
 

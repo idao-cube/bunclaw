@@ -8,8 +8,8 @@ import type { Config } from "../src/types";
 
 const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 const modelPort = 26000 + Math.floor(Math.random() * 1000);
-const dbPath = `.tmp-agent-${id}.db`;
-const eventsPath = `.tmp-agent-${id}.jsonl`;
+const dbPath = `temp/.tmp-agent-${id}.db`;
+const eventsPath = `temp/.tmp-agent-${id}.jsonl`;
 let mockModel: ReturnType<typeof Bun.serve>;
 
 const config: Config = {

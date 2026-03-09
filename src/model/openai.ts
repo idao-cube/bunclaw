@@ -23,21 +23,57 @@ export async function streamChatCompletion(params: {
   usage: { promptTokens: number; completionTokens: number; totalTokens: number };
 }> {
   const url = `${params.config.model.baseUrl.replace(/\/$/, "")}/chat/completions`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${params.config.model.apiKey}`,
+
+  async function fetchWithRetry(input: string, init: RequestInit, attempts = 3): Promise<Response> {
+    let lastErr: unknown = null;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const r = await fetch(input, init);
+        if (!r.ok) {
+          // 对 5xx 做重试
+          if (r.status >= 500 && i < attempts - 1) {
+            await new Promise((res) => setTimeout(res, 200 * Math.pow(2, i)));
+            lastErr = new Error(`server error ${r.status}`);
+            continue;
+          }
+          return r;
+        }
+        if (!r.body) {
+          if (i < attempts - 1) {
+            await new Promise((res) => setTimeout(res, 200 * Math.pow(2, i)));
+            continue;
+          }
+          return r;
+        }
+        return r;
+      } catch (err) {
+        lastErr = err;
+        if (i < attempts - 1) await new Promise((res) => setTimeout(res, 200 * Math.pow(2, i)));
+        else throw err;
+      }
+    }
+    throw lastErr ?? new Error("model fetch failed");
+  }
+
+  const res = await fetchWithRetry(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${params.config.model.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: params.config.model.model,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: params.messages,
+        tools: params.tools,
+        tool_choice: "auto",
+      }),
     },
-    body: JSON.stringify({
-      model: params.config.model.model,
-      stream: true,
-      stream_options: { include_usage: true },
-      messages: params.messages,
-      tools: params.tools,
-      tool_choice: "auto",
-    }),
-  });
+    3,
+  );
 
   if (!res.ok || !res.body) {
     throw new Error(`model request failed: ${res.status}`);

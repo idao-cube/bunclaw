@@ -50,9 +50,11 @@ export type Config = {
     webSearch?: {
       provider?: string;
       providers?: string[];
+      categories?: string[];
       endpoint?: string;
       apiKey?: string;
       timeoutMs?: number;
+      customScript?: string;
     };
   };
   sessions: {

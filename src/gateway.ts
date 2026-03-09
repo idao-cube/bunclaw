@@ -1,6 +1,6 @@
 ﻿import { ensureDataDirs, loadConfig, saveConfig } from "./config";
 import { DatabaseStore } from "./db";
-import { EventLog, dayLogFile } from "./event-log";
+import { EventLog, dayLogFile, dayLogFileByDate, dayWorkspaceDir } from "./event-log";
 import { ProcessManager } from "./process-manager";
 import { validateFirstFrame, validateReqFrame } from "./protocol";
 import type { EventFrame, ResFrame } from "./types";
@@ -16,13 +16,14 @@ export async function startGateway(options?: { configPath?: string }) {
   db.createSession("main");
 
   const inMemoryIdem = new Map<string, unknown>();
+  const activeAbortControllers = new Map<string, AbortController>();
   let seq = 0;
   const peers = new Set<ServerWebSocket<unknown>>();
 
   const server = Bun.serve({
     port: config.gateway.port,
     hostname: config.gateway.host,
-    fetch(req, serverRef) {
+    async fetch(req, serverRef) {
       const url = new URL(req.url);
       if (url.pathname === "/health") {
         return Response.json({ ok: true, service: "bunclaw-gateway" });
@@ -57,6 +58,33 @@ export async function startGateway(options?: { configPath?: string }) {
         return new Response(renderSkillsPage(config.gateway.host, config.gateway.port, config.gateway.token || "", config.ui.brandName), {
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, max-age=0" },
         });
+      }
+      if (url.pathname === "/upload" && req.method === "POST") {
+        try {
+          const formData = await req.formData();
+          const file = formData.get("file") as File | null;
+          if (!file) return Response.json({ ok: false, error: "缺少文件" }, { status: 400 });
+          const dayDir = dayWorkspaceDir(config.sessions.workspace);
+          const uploadDir = `${dayDir}/uploads`;
+          await ensureUploadDir(uploadDir);
+          const safeName = sanitizeFileName(file.name);
+          const dest = `${uploadDir}/${safeName}`;
+          await Bun.write(dest, file);
+          const servePath = `/files/${dest.slice(config.sessions.workspace.replaceAll("\\", "/").replace(/\/$/, "").length + 1)}`;
+          return Response.json({ ok: true, path: dest, url: servePath, name: safeName, size: file.size });
+        } catch (e) {
+          return Response.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+        }
+      }
+      if (url.pathname.startsWith("/files/")) {
+        const rel = decodeURIComponent(url.pathname.slice("/files/".length));
+        if (rel.includes("..")) return new Response("禁止路径穿越", { status: 403 });
+        const base = config.sessions.workspace.replaceAll("\\", "/").replace(/\/$/, "");
+        const full = `${base}/${rel}`;
+        const f = Bun.file(full);
+        if (!(await f.exists())) return new Response("文件不存在", { status: 404 });
+        const mime = f.type || "application/octet-stream";
+        return new Response(f, { headers: { "content-type": mime, "cache-control": "public, max-age=86400" } });
       }
       return new Response("未找到", { status: 404 });
     },
@@ -109,6 +137,18 @@ export async function startGateway(options?: { configPath?: string }) {
         };
 
         try {
+          if (frame.method === "agent.abort") {
+            const runId = String(frame.params?.runId ?? "");
+            if (runId && activeAbortControllers.has(runId)) {
+              activeAbortControllers.get(runId)!.abort();
+              activeAbortControllers.delete(runId);
+              sendRes({ type: "res", id: frame.id, ok: true, payload: { aborted: true, runId } });
+            } else {
+              sendRes({ type: "res", id: frame.id, ok: true, payload: { aborted: false, runId } });
+            }
+            return;
+          }
+
           if ((frame.method === "agent.run" || frame.method === "message.send") && frame.idemKey) {
             const idemKey = `${frame.method}:${frame.idemKey}`;
             if (inMemoryIdem.has(idemKey)) {
@@ -124,7 +164,7 @@ export async function startGateway(options?: { configPath?: string }) {
             }
           }
 
-          const payload = await handleMethod(frame.method, frame.params ?? {}, { config, configPath: options?.configPath, db, eventLog, processManager, sendEvent });
+          const payload = await handleMethod(frame.method, frame.params ?? {}, { config, configPath: options?.configPath, db, eventLog, processManager, sendEvent, activeAbortControllers });
           if ((frame.method === "agent.run" || frame.method === "message.send") && frame.idemKey) {
             const idemKey = `${frame.method}:${frame.idemKey}`;
             inMemoryIdem.set(idemKey, payload);
@@ -151,6 +191,7 @@ async function handleMethod(
     eventLog: EventLog;
     processManager: ProcessManager;
     sendEvent: (event: string, payload: unknown, sessionId?: string) => Promise<void>;
+    activeAbortControllers: Map<string, AbortController>;
   },
 ): Promise<unknown> {
   if (method === "health") return { ok: true, uptime: process.uptime() };
@@ -175,10 +216,20 @@ async function handleMethod(
   }
   if (method === "logs.list") {
     const limit = Math.max(1, Math.min(500, Number(params.limit ?? 200) || 200));
-    const todayLogPath = dayLogFile(deps.config.sessions.workspace);
-    const daily = Bun.file(todayLogPath);
+    let dateStr = typeof params.date === "string" ? params.date.trim() : "";
+    if (!dateStr) {
+      // 若前端未传 date，自动用本地 today 字符串
+      dateStr = new Date().toISOString().slice(0, 10);
+    }
+    let logPath: string;
+    if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      logPath = dayLogFileByDate(deps.config.sessions.workspace, dateStr);
+    } else {
+      logPath = dayLogFile(deps.config.sessions.workspace);
+    }
+    const daily = Bun.file(logPath);
     const fallback = Bun.file(deps.config.sessions.eventsPath);
-    const text = (await daily.exists()) ? await daily.text() : ((await fallback.exists()) ? await fallback.text() : "");
+    const text = (await daily.exists()) ? await daily.text() : ((!dateStr && await fallback.exists()) ? await fallback.text() : "");
     if (!text.trim()) return [];
     const lines = text.trim().split("\n");
     const out: Array<Record<string, unknown>> = [];
@@ -198,6 +249,7 @@ async function handleMethod(
   }
   if (method === "chat.clear") {
     deps.db.clearChatData();
+    await deps.eventLog.clear();
     const main = deps.db.createSession("main");
     await deps.sendEvent("system.chat_cleared", { sessionId: main.id, at: new Date().toISOString() }, main.id);
     return { ok: true, sessionId: main.id };
@@ -239,6 +291,15 @@ async function handleMethod(
         maxToolRounds: deps.config.model.maxToolRounds,
       },
       tools: { profile: deps.config.tools.profile, allow: deps.config.tools.allow, deny: deps.config.tools.deny },
+      webSearch: {
+        provider: deps.config.tools.webSearch?.provider || "",
+        providers: deps.config.tools.webSearch?.providers || [],
+        categories: deps.config.tools.webSearch?.categories || [],
+        endpoint: deps.config.tools.webSearch?.endpoint || "",
+        apiKey: deps.config.tools.webSearch?.apiKey || "",
+        timeoutMs: Number(deps.config.tools.webSearch?.timeoutMs ?? 8000),
+        customScript: deps.config.tools.webSearch?.customScript || "",
+      },
       storage: deps.config.storage,
       security: { workspaceOnly: deps.config.security.workspaceOnly },
       ui: { brandName: deps.config.ui.brandName },
@@ -269,6 +330,20 @@ async function handleMethod(
     if (patch.model?.apiKey !== undefined) deps.config.model.apiKey = String(patch.model.apiKey || "");
     if (patch.model?.model !== undefined) deps.config.model.model = String(patch.model.model || deps.config.model.model);
     if (patch.model?.maxToolRounds !== undefined) deps.config.model.maxToolRounds = Math.max(1, Number(patch.model.maxToolRounds) || 1);
+    if (patch.tools?.profile !== undefined) deps.config.tools.profile = String(patch.tools.profile || deps.config.tools.profile) as any;
+    if (patch.tools?.allow !== undefined && Array.isArray(patch.tools.allow)) deps.config.tools.allow = patch.tools.allow.map((x: unknown) => String(x || "")).filter(Boolean);
+    if (patch.tools?.deny !== undefined && Array.isArray(patch.tools.deny)) deps.config.tools.deny = patch.tools.deny.map((x: unknown) => String(x || "")).filter(Boolean);
+    if (patch.tools?.webSearch !== undefined) {
+      const ws = patch.tools.webSearch as Record<string, unknown>;
+      deps.config.tools.webSearch = deps.config.tools.webSearch || {};
+      if (ws.provider !== undefined) deps.config.tools.webSearch.provider = String(ws.provider || "");
+      if (ws.providers !== undefined && Array.isArray(ws.providers)) deps.config.tools.webSearch.providers = ws.providers.map((x) => String(x || "")).filter(Boolean);
+      if (ws.categories !== undefined && Array.isArray(ws.categories)) deps.config.tools.webSearch.categories = ws.categories.map((x) => String(x || "")).filter(Boolean);
+      if (ws.endpoint !== undefined) deps.config.tools.webSearch.endpoint = String(ws.endpoint || "");
+      if (ws.apiKey !== undefined) deps.config.tools.webSearch.apiKey = String(ws.apiKey || "");
+      if (ws.timeoutMs !== undefined) deps.config.tools.webSearch.timeoutMs = Math.max(1000, Number(ws.timeoutMs) || 8000);
+      if (ws.customScript !== undefined) deps.config.tools.webSearch.customScript = String(ws.customScript || "");
+    }
     if (patch.gateway?.allowExternal !== undefined) deps.config.gateway.allowExternal = Boolean(patch.gateway.allowExternal);
     if (patch.gateway?.host !== undefined) deps.config.gateway.host = String(patch.gateway.host || "127.0.0.1");
     if (patch.gateway?.port !== undefined) deps.config.gateway.port = Math.max(1, Number(patch.gateway.port) || deps.config.gateway.port);
@@ -323,19 +398,23 @@ async function handleMethod(
     return { sessionId: session.id, messageId: message.id };
   }
   if (method === "agent.run") {
-    return await runAgent({
+    const abortController = new AbortController();
+    const result = await runAgent({
       config: deps.config,
       db: deps.db,
       eventLog: deps.eventLog,
       toolCtx: {
         workspace: deps.config.sessions.workspace,
         processManager: deps.processManager,
+        eventLog: deps.eventLog,
         webSearch: {
           provider: deps.config.tools.webSearch?.provider,
           providers: deps.config.tools.webSearch?.providers,
+          categories: deps.config.tools.webSearch?.categories,
           endpoint: deps.config.tools.webSearch?.endpoint,
           apiKey: deps.config.tools.webSearch?.apiKey,
           timeoutMs: deps.config.tools.webSearch?.timeoutMs,
+          customScript: deps.config.tools.webSearch?.customScript,
         },
       },
       sessionKey: String(params.sessionKey ?? "main"),
@@ -343,7 +422,13 @@ async function handleMethod(
       onEvent: (event, payload) => {
         void deps.sendEvent(event, payload, typeof (payload as any)?.sessionId === "string" ? (payload as any).sessionId : undefined);
       },
+      abortSignal: abortController.signal,
+      onRunId: (runId: string) => {
+        deps.activeAbortControllers.set(runId, abortController);
+      },
     });
+    deps.activeAbortControllers.delete(result.runId);
+    return result;
   }
   if (method.startsWith("process.")) {
     const action = method.split(".")[1];
@@ -426,6 +511,20 @@ async function ensureDir(dir: string): Promise<void> {
     return;
   }
   await Bun.spawn(["sh", "-lc", `mkdir -p '${dir}'`]).exited;
+}
+
+async function ensureUploadDir(dir: string): Promise<void> {
+  await ensureDir(dir);
+}
+
+function sanitizeFileName(name: string): string {
+  const base = name.replaceAll("\\", "/").split("/").pop() || "file";
+  const safe = base.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, "_").slice(0, 128);
+  if (!safe || safe === "." || safe === "..") return `upload_${Date.now()}`;
+  const ts = Date.now().toString(36);
+  const dot = safe.lastIndexOf(".");
+  if (dot > 0) return `${safe.slice(0, dot)}_${ts}${safe.slice(dot)}`;
+  return `${safe}_${ts}`;
 }
 
 function sanitizeSkillName(name: string): string {
@@ -521,6 +620,22 @@ function renderSharedStyle(): string {
     .bubble.tool { margin-right:auto; max-width:92%; background:rgba(255,255,255,.07); color:var(--ink); border:1px dashed #ffffff55; border-left:4px solid rgba(255,255,255,.65); border-radius:10px; }
     .bubble.tool .bubble-meta { color:var(--muted); }
     .chat-input-wrap { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; gap:8px; align-items:end; margin-top:10px; }
+    .chat-input-bar { grid-template-columns:auto minmax(0,1fr) auto auto auto; align-items:center; }
+    .chat-bottom { display:flex; flex-direction:column; gap:6px; }
+    .chat-bar-btn { width:42px; height:42px; margin:0; padding:0; border-radius:10px; font-size:22px; display:flex; align-items:center; justify-content:center; cursor:pointer; background:rgba(255,255,255,.12); color:var(--ink); border:1px solid var(--line); flex-shrink:0; }
+    .chat-bar-btn:hover { background:rgba(255,255,255,.22); }
+    .chat-bar-select { width:auto; min-width:80px; height:42px; margin:0; padding:4px 8px; border-radius:10px; background:rgba(255,255,255,.10); color:var(--ink); border:1px solid var(--line); font-size:13px; cursor:pointer; appearance:auto; flex-shrink:0; }
+    .web-toggle { display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none; flex-shrink:0; height:42px; padding:0 8px; border-radius:10px; background:rgba(255,255,255,.08); border:1px solid var(--line); }
+    .web-toggle input { display:none; }
+    .web-toggle-label { font-size:18px; opacity:.5; transition:opacity .15s; }
+    .web-toggle input:checked + .web-toggle-label { opacity:1; }
+    .web-toggle:has(input:checked) { background:rgba(80,180,255,.18); border-color:rgba(80,180,255,.45); }
+    .attach-preview { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+    .attach-preview:empty { display:none; }
+    .attach-item { display:flex; align-items:center; gap:4px; background:rgba(255,255,255,.10); border:1px solid var(--line); border-radius:8px; padding:4px 8px; font-size:12px; color:var(--muted); }
+    .attach-item img { height:28px; border-radius:4px; }
+    .attach-remove { cursor:pointer; font-weight:700; color:var(--danger); margin-left:4px; font-size:14px; }
+    .chat-action.is-abort { background:linear-gradient(180deg,#fca5a5,#ef4444); color:#fff; }
     .chat-input { min-height:48px; max-height:160px; margin:0; }
     .input-stack { position:relative; min-width:0; }
     .skill-suggest { position:absolute; left:0; right:0; bottom:100%; margin-bottom:6px; background:var(--glass-2); border:1px solid var(--line); border-radius:10px; max-height:200px; overflow:auto; display:none; z-index:20; backdrop-filter: blur(10px); }
@@ -529,8 +644,11 @@ function renderSharedStyle(): string {
     .skill-item:last-child { border-bottom:none; }
     .skill-item:hover, .skill-item.active { background:rgba(255,255,255,.15); }
     .chat-action { width:120px; margin:0; }
-    .send-status { font-size:12px; color:var(--muted); padding:0 4px; align-self:center; }
+    .send-status { font-size:12px; color:var(--muted); padding:2px 6px; white-space:nowrap; text-align:right; }
     .bubble-meta { margin-top:6px; font-size:11px; color:var(--muted); }
+    .bubble-images { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+    .bubble-images img { max-width:200px; max-height:180px; border-radius:8px; cursor:pointer; border:1px solid var(--line); }
+    .bubble-images img:hover { opacity:.85; }
     .log-grid { display:grid; grid-template-columns:1fr; gap:12px; }
     .log-grid, .log-grid > div { min-height:0; height:100%; }
     .log-box { min-height:0; height:100%; }
@@ -556,9 +674,18 @@ function renderSharedStyle(): string {
     .theme-light .bubble.assistant { background:rgba(255,255,255,.82); color:#111216; border-color:rgba(15,18,24,.18); }
     .theme-light .bubble.tool { background:rgba(255,255,255,.92); color:#111216; border-color:rgba(15,18,24,.28); border-left-color:rgba(15,18,24,.5); }
     .theme-light .btn-secondary, .theme-light .theme-btn { background:rgba(0,0,0,.06); color:#0f1115; border-color:rgba(15,18,24,.18); }
+    .theme-light .chat-bar-btn { background:rgba(0,0,0,.06); color:#0f1115; border-color:rgba(15,18,24,.18); }
+    .theme-light .chat-bar-btn:hover { background:rgba(0,0,0,.12); }
+    .theme-light .chat-bar-select { background:rgba(0,0,0,.04); color:#0f1115; border-color:rgba(15,18,24,.18); }
+    .theme-light .web-toggle { background:rgba(0,0,0,.04); border-color:rgba(15,18,24,.18); }
+    .theme-light .web-toggle:has(input:checked) { background:rgba(30,120,220,.12); border-color:rgba(30,120,220,.4); }
+    .theme-light .attach-item { background:rgba(0,0,0,.05); border-color:rgba(15,18,24,.14); }
+    .theme-light .chat-action.is-abort { background:linear-gradient(180deg,#fca5a5,#ef4444); color:#fff; }
+    .theme-light .skill-suggest { background:rgba(255,255,255,.92); border-color:rgba(15,18,24,.16); }
+    .theme-light .skill-item:hover, .theme-light .skill-item.active { background:rgba(0,0,0,.08); }
     @media (max-width: 1200px) {
       .chat-input-wrap { grid-template-columns:minmax(0,1fr) auto auto; }
-      .send-status { grid-column:1 / -1; order:4; }
+      .chat-input-bar { grid-template-columns:auto minmax(0,1fr) auto auto auto; }
     }
     @media (max-width: 900px) {
       .app-shell { padding:12px; }
@@ -571,6 +698,7 @@ function renderSharedStyle(): string {
       .form-grid { grid-template-columns:1fr; }
       .raw-config { height:54vh; max-height:none; }
       .chat-input-wrap { grid-template-columns:1fr; }
+      .chat-input-bar { grid-template-columns:auto minmax(0,1fr) auto auto; }
       .chat-action { width:100%; }
       .chat-thread { min-height:120px; }
     }
@@ -612,14 +740,25 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
           <input id="session" placeholder="会话ID（默认 main）" value="main" />
         </div>
         <div id="chat-thread" class="chat-thread"></div>
-        <div class="chat-input-wrap">
-          <div class="input-stack">
-            <div id="skillSuggest" class="skill-suggest"></div>
-            <textarea id="chat-input" class="chat-input" placeholder="输入消息，回车发送（Shift+Enter 换行）。支持 @技能名 或 /技能名"></textarea>
-          </div>
+        <div class="chat-bottom">
+          <div id="attachPreview" class="attach-preview"></div>
           <div id="sendStatus" class="send-status">空闲</div>
-          <button id="sendBtn" class="chat-action">发送</button>
-          <button id="clearAllBtn" class="chat-action btn-danger">清除所有消息</button>
+          <div class="chat-input-wrap chat-input-bar">
+            <button id="attachBtn" class="chat-bar-btn" title="上传文件/图片" style="display:none">+</button>
+            <input id="fileInput" type="file" accept="image/*,.txt,.md,.json,.csv,.log,.xml,.yaml,.yml,.html,.js,.ts,.py,.sh,.bat,.ps1" multiple style="display:none" />
+            <div class="input-stack">
+              <div id="skillSuggest" class="skill-suggest"></div>
+              <textarea id="chat-input" class="chat-input" placeholder="输入消息，回车发送（Shift+Enter 换行）。支持 @技能名 或 /技能名"></textarea>
+            </div>
+            <select id="toolSelect" class="chat-bar-select" title="技能/工具" style="display:none">
+              <option value="">🔧 工具</option>
+            </select>
+            <label class="web-toggle" title="联网搜索开关">
+              <input id="webToggle" type="checkbox" checked />
+              <span class="web-toggle-label">🌐</span>
+            </label>
+            <button id="sendBtn" class="chat-action" title="发送/暂停">发送</button>
+          </div>
         </div>
       </div>
     </div>
@@ -629,9 +768,14 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
     const input = document.getElementById('chat-input');
     const skillSuggest = document.getElementById('skillSuggest');
     const sendBtn = document.getElementById('sendBtn');
-    const clearAllBtn = document.getElementById('clearAllBtn');
     const sendStatus = document.getElementById('sendStatus');
     const themeToggle = document.getElementById('themeToggle');
+    const attachBtn = document.getElementById('attachBtn');
+    const fileInput = document.getElementById('fileInput');
+    const attachPreview = document.getElementById('attachPreview');
+    const toolSelect = document.getElementById('toolSelect');
+    const webToggle = document.getElementById('webToggle');
+    const attachments = [];
     const applyTheme = (theme) => {
       document.body.classList.toggle('theme-light', theme === 'light');
       themeToggle.textContent = theme === 'light' ? '深色主题' : '浅色主题';
@@ -639,12 +783,23 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
     };
     applyTheme(localStorage.getItem('bunclaw_theme') || 'dark');
     themeToggle.onclick = () => applyTheme(document.body.classList.contains('theme-light') ? 'dark' : 'light');
-    const appendBubble = (role, text, tokens) => {
+    const appendBubble = (role, text, tokens, images) => {
       const node = document.createElement('div');
       node.className = 'bubble ' + role;
       const content = document.createElement('div');
       content.textContent = text || '';
       node.appendChild(content);
+      if (Array.isArray(images) && images.length > 0) {
+        const imgWrap = document.createElement('div');
+        imgWrap.className = 'bubble-images';
+        for (const src of images) {
+          const img = document.createElement('img');
+          img.src = src;
+          img.onclick = () => window.open(src, '_blank');
+          imgWrap.appendChild(img);
+        }
+        node.appendChild(imgWrap);
+      }
       const meta = document.createElement('div');
       meta.className = 'bubble-meta';
       meta.textContent = typeof tokens === 'number' && tokens > 0 ? ('约 ' + tokens + ' tokens') : '';
@@ -662,6 +817,7 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
     let currentAssistantBubble = null;
     let sending = false;
     let skills = [];
+    let tools = [];
     let suggestItems = [];
     let suggestIndex = -1;
     const ensureReady = () => {
@@ -727,16 +883,134 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
       const res = await req('skill.list', {});
       if (res.ok && Array.isArray(res.payload)) skills = res.payload;
     };
+    const loadTools = async () => {
+      try {
+        const res = await req('tools.list', {});
+        if (res.ok && res.payload) {
+          tools = Array.isArray(res.payload.allowed) ? res.payload.allowed : [];
+          toolSelect.innerHTML = '<option value="">🔧 工具</option>';
+          for (const t of tools) {
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t;
+            toolSelect.appendChild(opt);
+          }
+        }
+      } catch {}
+    };
+    const checkModelAvailable = async () => {
+      try {
+        const res = await req('system.config.get', {});
+        if (res.ok && res.payload && res.payload.model) {
+          const m = res.payload.model;
+          const available = Boolean(m.apiKey && String(m.apiKey).trim() && m.baseUrl && String(m.baseUrl).trim());
+          attachBtn.style.display = available ? '' : 'none';
+        }
+      } catch {}
+    };
+    toolSelect.onchange = () => {
+      const v = toolSelect.value;
+      if (!v) return;
+      const cur = input.value || '';
+      input.value = cur + (cur && !cur.endsWith(' ') ? ' ' : '') + '[工具:' + v + '] ';
+      toolSelect.value = '';
+      input.focus();
+    };
+    attachBtn.onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const files = fileInput.files;
+      if (!files || files.length === 0) return;
+      for (const file of files) {
+        const form = new FormData();
+        form.append('file', file);
+        try {
+          const res = await fetch('/upload', { method: 'POST', body: form });
+          const json = await res.json();
+          if (json.ok) {
+            attachments.push({ name: json.name || file.name, type: file.type, size: json.size || file.size, url: json.url, dataUrl: null, text: null });
+            renderAttachPreview();
+          } else {
+            appendBubble('assistant', '上传失败: ' + (json.error || '未知错误'));
+          }
+        } catch (e) {
+          appendBubble('assistant', '上传失败: ' + String(e.message || e));
+        }
+      }
+      fileInput.value = '';
+    };
+    const renderAttachPreview = () => {
+      attachPreview.innerHTML = '';
+      attachments.forEach((a, i) => {
+        const item = document.createElement('div');
+        item.className = 'attach-item';
+        if (a.url && a.type && a.type.startsWith('image/')) {
+          const img = document.createElement('img');
+          img.src = a.url;
+          item.appendChild(img);
+        }
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = a.name + ' (' + formatFileSize(a.size) + ')';
+        item.appendChild(nameSpan);
+        const removeBtn = document.createElement('span');
+        removeBtn.className = 'attach-remove';
+        removeBtn.textContent = '×';
+        removeBtn.onclick = () => { attachments.splice(i, 1); renderAttachPreview(); };
+        item.appendChild(removeBtn);
+        attachPreview.appendChild(item);
+      });
+    };
+    const formatFileSize = (bytes) => {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / 1048576).toFixed(1) + ' MB';
+    };
+    const buildMessage = (text) => {
+      let msg = text;
+      if (webToggle.checked) {
+        msg = '[联网搜索] ' + msg;
+      }
+      const sentImages = [];
+      if (attachments.length > 0) {
+        const parts = attachments.map((a) => {
+          if (a.url && a.type && a.type.startsWith('image/')) {
+            sentImages.push(a.url);
+            return '\\n[图片:' + a.name + '](' + a.url + ')';
+          }
+          if (a.text !== null) return '\\n[附件:' + a.name + ']\\n' + String(a.text).slice(0, 8000);
+          if (a.url) return '\\n[文件:' + a.name + '](' + a.url + ')';
+          return '\\n[文件:' + a.name + ']';
+        });
+        msg += parts.join('');
+        attachments.length = 0;
+        renderAttachPreview();
+      }
+      return { msg, sentImages };
+    };
+    const abortCurrentRun = async () => {
+      if (!currentRunId) return;
+      try {
+        await req('agent.abort', { runId: currentRunId });
+      } catch {}
+      sending = false;
+      sendBtn.textContent = '发送';
+      sendBtn.classList.remove('is-abort');
+      sendStatus.textContent = '已中断';
+    };
     const sendMessage = async () => {
-      if (sending) return;
+      if (sending) {
+        await abortCurrentRun();
+        return;
+      }
       const sessionKey = document.getElementById('session').value || 'main';
-      const message = input.value.trim();
-      if (!message) return;
+      const rawText = input.value.trim();
+      if (!rawText && attachments.length === 0) return;
+      const { msg: message, sentImages } = buildMessage(rawText);
       try {
         sending = true;
         sendStatus.textContent = '发送中...';
-        sendBtn.disabled = true;
-        appendBubble('user', message, Math.max(1, Math.ceil(message.length / 4)));
+        sendBtn.textContent = '暂停';
+        sendBtn.classList.add('is-abort');
+        appendBubble('user', rawText, Math.max(1, Math.ceil(rawText.length / 4)), sentImages);
         input.value = '';
         currentRunId = null;
         currentAssistantBubble = appendBubble('assistant', '思考中...');
@@ -750,49 +1024,28 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
           }
           const t = Number(res.payload.tokens || 0);
           if (t > 0) currentAssistantBubble.meta.textContent = '约 ' + t + ' tokens';
+          if (res.payload.runId) currentRunId = res.payload.runId;
         }
       } catch (e) {
         appendBubble('assistant', e instanceof Error ? e.message : String(e));
       } finally {
         sending = false;
+        sendBtn.textContent = '发送';
+        sendBtn.classList.remove('is-abort');
         sendStatus.textContent = '空闲';
-        if (ws.readyState === WebSocket.OPEN) sendBtn.disabled = false;
-      }
-    };
-    const clearAllMessages = async () => {
-      if (sending) return;
-      try {
-        sending = true;
-        sendBtn.disabled = true;
-        clearAllBtn.disabled = true;
-        const res = await req('chat.clear', {});
-        if (!res.ok) throw new Error((res.error && res.error.message) || '清理失败');
-        thread.textContent = '';
-        appendBubble('assistant', '已清除所有聊天消息');
-      } catch (e) {
-        appendBubble('assistant', e instanceof Error ? e.message : String(e));
-      } finally {
-        sending = false;
-        if (ws.readyState === WebSocket.OPEN) {
-          sendBtn.disabled = false;
-          clearAllBtn.disabled = false;
-        }
       }
     };
     ws.onopen = () => {
       ws.send(JSON.stringify({ type:'connect', auth:{ token }, client:'bunclaw-ui' }));
       sendBtn.disabled = false;
-      clearAllBtn.disabled = false;
       appendBubble('assistant', '已连接网关');
     };
     ws.onclose = () => {
       sendBtn.disabled = true;
-      clearAllBtn.disabled = true;
       appendBubble('assistant', '连接已断开，请刷新页面后重试');
     };
     ws.onerror = () => {
       sendBtn.disabled = true;
-      clearAllBtn.disabled = true;
       appendBubble('assistant', '连接异常，请检查网关状态');
     };
     ws.onmessage = (ev) => {
@@ -800,6 +1053,8 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
       if (msg.type === 'res' && msg.id === 'connect') {
         loadHistory();
         loadSkills();
+        loadTools();
+        checkModelAvailable();
         return;
       }
       if (msg.type === 'res' && pending.has(msg.id)) {
@@ -829,10 +1084,12 @@ function renderChatPage(host: string, port: number, token: string, brandName: st
         const t = Number(msg.payload && msg.payload.tokens ? msg.payload.tokens : 0);
         if (t > 0) currentAssistantBubble.meta.textContent = '约 ' + t + ' tokens';
         sendStatus.textContent = '已完成';
+        sending = false;
+        sendBtn.textContent = '发送';
+        sendBtn.classList.remove('is-abort');
       }
     };
     sendBtn.onclick = sendMessage;
-    clearAllBtn.onclick = clearAllMessages;
     skillSuggest.onclick = (ev) => {
       const el = ev.target && ev.target.closest ? ev.target.closest('.skill-item') : null;
       if (!el) return;
@@ -912,7 +1169,12 @@ function renderLogsPage(host: string, port: number, token: string, brandName: st
       <h2 class="section-title">${brandName} Logs</h2>
       <div class="log-grid">
         <div>
-          <h3 class="section-title">系统/事件日志</h3>
+          <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+            <h3 class="section-title" style="margin:0;">系统/事件日志</h3>
+            <input id="logDate" type="date" style="width:auto; margin:0; padding:6px 10px; border-radius:8px; background:rgba(255,255,255,.08); color:var(--ink); border:1px solid var(--line); font-size:13px;" />
+            <button id="logLoad" style="width:auto; margin:0; padding:6px 14px; border-radius:8px; font-size:13px;">加载</button>
+            <button id="logToday" class="btn-secondary" style="width:auto; margin:0; padding:6px 14px; border-radius:8px; font-size:13px;">今天</button>
+          </div>
           <pre id="eventLog" class="log-box"></pre>
         </div>
       </div>
@@ -922,6 +1184,11 @@ function renderLogsPage(host: string, port: number, token: string, brandName: st
   <script>
     const eventLog = document.getElementById('eventLog');
     const themeToggle = document.getElementById('themeToggle');
+    const logDate = document.getElementById('logDate');
+    const logLoad = document.getElementById('logLoad');
+    const logToday = document.getElementById('logToday');
+    const todayStr = new Date().toISOString().slice(0, 10);
+    logDate.value = todayStr;
     const applyTheme = (theme) => {
       document.body.classList.toggle('theme-light', theme === 'light');
       themeToggle.textContent = theme === 'light' ? '深色主题' : '浅色主题';
@@ -951,12 +1218,24 @@ function renderLogsPage(host: string, port: number, token: string, brandName: st
       pending.set(id, resolve);
       ws.send(JSON.stringify({ type:'req', id, method, params, idemKey: crypto.randomUUID() }));
     });
-    const loadHistory = async () => {
-      const res = await req('logs.list', { limit: 200 });
+    const loadHistory = async (date) => {
+      const params = { limit: 200 };
+      if (date) params.date = date;
+      const res = await req('logs.list', params);
       if (!res.ok || !Array.isArray(res.payload)) return;
-      eventLog.textContent = '';
+      const label = date || new Date().toISOString().slice(0, 10);
+      print('\\n\\u2500\\u2500 ' + label + ' \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500');
       for (const item of res.payload) print(normalizeEvent(item));
-      print('已加载历史日志，共 ' + String(res.payload.length) + ' 条');
+      print('\\u5df2\\u52a0\\u8f7d ' + label + ' \\u65e5\\u5fd7\\uff0c\\u5171 ' + String(res.payload.length) + ' \\u6761');
+    };
+    logLoad.onclick = () => {
+      const d = logDate.value;
+      loadHistory(d).catch((e) => print('加载日志失败：' + String(e && e.message ? e.message : e)));
+    };
+    logToday.onclick = () => {
+      const today = new Date().toISOString().slice(0, 10);
+      logDate.value = today;
+      loadHistory(today).catch((e) => print('加载日志失败：' + String(e && e.message ? e.message : e)));
     };
     ws.onopen = () => {
       ws.send(JSON.stringify({ type:'connect', auth:{ token }, client:'bunclaw-logs' }));
@@ -965,7 +1244,7 @@ function renderLogsPage(host: string, port: number, token: string, brandName: st
       const msg = JSON.parse(ev.data);
       if (msg.type === 'res' && msg.id === 'connect') {
         print('已连接日志流');
-        loadHistory().catch((e) => print('加载历史日志失败：' + String(e && e.message ? e.message : e)));
+        loadHistory('').catch((e) => print('加载历史日志失败：' + String(e && e.message ? e.message : e)));
         return;
       }
       if (msg.type === 'res' && pending.has(msg.id)) {
@@ -1191,6 +1470,13 @@ function renderConfigPage(host: string, port: number, token: string, brandName: 
           <button id="cfgSave" class="chat-action">保存配置</button>
         </div>
         </div>
+        <div style="margin-top:16px; padding:14px; border:1px solid var(--danger); border-radius:12px; background:rgba(249,115,115,.06);">
+          <h3 class="section-title" style="color:var(--danger);">危险操作</h3>
+          <div class="hint">以下操作不可恢复，请谨慎使用。</div>
+          <div class="chat-input-wrap" style="margin-top:8px;">
+            <button id="clearAllBtn" class="chat-action btn-danger" style="width:auto;">清除所有聊天消息</button>
+          </div>
+        </div>
         <pre id="cfgLog"></pre>
       </div>
     </div>
@@ -1314,7 +1600,17 @@ function renderConfigPage(host: string, port: number, token: string, brandName: 
     document.getElementById('cfgFormSave').onclick = async () => { try { await saveForm(); } catch (e) { print(String(e.message || e)); } };
     document.getElementById('cfgRefresh').onclick = async () => { try { await loadConfig(); } catch (e) { print(String(e.message || e)); } };
     document.getElementById('cfgFormat').onclick = () => { try { formatConfig(); } catch (e) { print('JSON 格式错误：' + String(e.message || e)); } };
-    document.getElementById('cfgSave').onclick = async () => { try { await saveConfig(); } catch (e) { print(String(e.message || e)); } };
+    document.getElementById('cfgSave').onclick = async () => { try { await saveConfig(); } catch (e) { print('JSON 格式错误：' + String(e.message || e)); } };
+    document.getElementById('clearAllBtn').onclick = async () => {
+      if (!confirm('确定要清除所有聊天消息吗？此操作不可恢复。')) return;
+      try {
+        const res = await req('chat.clear', {});
+        if (!res.ok) throw new Error((res.error && res.error.message) || '清理失败');
+        print('已清除所有聊天消息');
+      } catch (e) {
+        print('清除失败：' + String(e.message || e));
+      }
+    };
   </script>
 </body>
 </html>`;

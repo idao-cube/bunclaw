@@ -5,7 +5,7 @@ import { callGateway } from "../src/client";
 let mockModel: ReturnType<typeof Bun.serve>;
 let gateway: ReturnType<typeof Bun.serve>;
 const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-const configPath = `.tmp-gateway-${id}.json`;
+const configPath = `temp/.tmp-gateway-${id}.json`;
 const modelPort = 22000 + Math.floor(Math.random() * 1000);
 const gatewayPort = modelPort + 1000;
 
@@ -24,15 +24,15 @@ describe("gateway integration", () => {
           },
           tools: { profile: "coding", allow: [], deny: [] },
           sessions: {
-            dbPath: `.tmp-gateway-${id}.db`,
-            eventsPath: `.tmp-gateway-${id}.jsonl`,
+            dbPath: `temp/.tmp-gateway-${id}.db`,
+            eventsPath: `temp/.tmp-gateway-${id}.jsonl`,
             workspace: process.cwd(),
           },
           storage: {
             baseDir: process.cwd(),
-            skillsDir: `.tmp-skills-${id}`,
-            agentsDir: `.tmp-agents-${id}`,
-            channelsDir: `.tmp-channels-${id}`,
+            skillsDir: `temp/.tmp-skills-${id}`,
+            agentsDir: `temp/.tmp-agents-${id}`,
+            channelsDir: `temp/.tmp-channels-${id}`,
           },
           security: { workspaceOnly: true },
           ui: { brandName: "BunClaw" },
@@ -125,7 +125,7 @@ describe("gateway integration", () => {
   });
 
   test("tools.list and skill CRUD work", async () => {
-    const skillRoot = `.tmp-skills-${id}`;
+    const skillRoot = `temp/.tmp-skills-${id}`;
     if (process.platform === "win32") {
       await Bun.spawn(["powershell", "-NoProfile", "-Command", `New-Item -ItemType Directory -Path '${skillRoot}\\tech-article-generator' -Force | Out-Null`]).exited;
     } else {

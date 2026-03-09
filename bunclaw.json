@@ -2,7 +2,8 @@
   "gateway": {
     "host": "127.0.0.1",
     "port": 16789,
-    "token": ""
+    "token": "",
+    "allowExternal": false
   },
   "_model": {
     "baseUrl": "https://api.openai.com/v1",
@@ -22,14 +23,38 @@
     "deny": [],
     "webSearch": {
       "provider": "",
+      "providers": [
+        "news",
+        "media",
+        "bing",
+        "google",
+        "duckduckgo",
+        "baidu",
+        "sogou",
+        "so",
+        "github"
+      ],
+      "categories": [
+        "tech",
+        "research",
+        "media"
+      ],
       "endpoint": "",
-      "apiKey": ""
+      "apiKey": "",
+      "timeoutMs": 8000,
+      "customScript": "scripts/custom-web-search.ts"
     }
   },
   "sessions": {
     "dbPath": ".bunclaw/bunclaw.db",
     "eventsPath": ".bunclaw/events.jsonl",
     "workspace": "C:\\woorkspace\\bunclaw"
+  },
+  "storage": {
+    "baseDir": ".bunclaw",
+    "skillsDir": ".bunclaw/skills",
+    "agentsDir": ".bunclaw/agents",
+    "channelsDir": ".bunclaw/channels"
   },
   "security": {
     "workspaceOnly": true

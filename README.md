@@ -4,7 +4,7 @@
 > A pure-Bun local agent control plane inspired by OpenClaw.
 
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
-[![Protocol](https://img.shields.io/badge/protocol-WebSocket-2ea44f)](#协议)
+[![Protocol](https://img.shields.io/badge/protocol-WebSocket-2ea44f)](#架构v1)
 [![License](https://img.shields.io/badge/license-MIT-blue)](#license)
 
 ## 为什么是 BunClaw
@@ -68,7 +68,7 @@ bunclaw --help
 ## OpenClaw 对比
 
 | 项目 | OpenClaw | BunClaw |
-|---|---|---|
+| --- | --- | --- |
 | 技术栈 | Node/TS 生态 | **纯 Bun** |
 | 控制面 | Gateway + 多模块 | **Gateway + Agent + CLI（v1）** |
 | 渠道接入 | 丰富（IM/设备等） | 本地 Web UI + CLI |
@@ -179,7 +179,15 @@ bun run bin/bunclaw.ts doctor
     "profile": "coding",
     "allow": [],
     "deny": [],
-    "webSearch": { "provider": "", "endpoint": "", "apiKey": "" }
+    "webSearch": {
+      "provider": "",
+      "providers": ["news", "media", "bing", "google", "duckduckgo", "baidu", "sogou", "so", "github"],
+      "categories": ["tech", "research", "media"],
+      "endpoint": "",
+      "apiKey": "",
+      "timeoutMs": 8000,
+      "customScript": ""
+    }
   },
   "sessions": {
     "dbPath": "~/.bunclaw/bunclaw.db",
@@ -196,6 +204,57 @@ bun run bin/bunclaw.ts doctor
   "ui": { "brandName": "BunClaw" }
 }
 ```
+
+## TypeScript 类型（零三方依赖）
+
+项目默认不依赖 `@types/bun` / `@types/node`。类型支持由仓库内置声明文件提供：
+
+- `src/bun-ambient.d.ts`：`Bun`、`process`、`bun:test`、`bun:sqlite` 等最小类型声明
+- `tsconfig.json`：`types` 为空数组，避免外部类型包耦合
+
+这保证了“纯 Bun + 零第三方类型依赖”的开发体验。
+
+### 自定义搜索脚本（Bun）
+
+`web_search` 支持 `custom` provider，可通过 Bun 脚本接入自定义搜索逻辑：
+
+1. 配置 `tools.webSearch.customScript`，例如：`scripts/custom-web-search.ts`
+  或配置 `tools.webSearch.endpoint`（HTTP JSON 接口）。
+2. 调用时传入 `providers: ["custom"]` 或 `providers: ["custom", "github", "bing"]`
+3. 脚本通过 `stdin` 接收 JSON：`{ query, count, timeoutMs }`
+4. 脚本通过 `stdout` 返回 JSON：
+
+```json
+{
+  "results": [
+    { "title": "...", "url": "https://...", "snippet": "...", "source": "..." }
+  ]
+}
+```
+
+项目内提供示例：`scripts/custom-web-search.ts`
+
+`custom` provider 优先级：`endpoint` > `customScript`。任一失败时，会继续执行后续内置 provider（如 `github`/`bing`）。
+
+### 搜索聚合与专业性策略
+
+- 多引擎并行聚合：`news/media/bing/google/duckduckgo/baidu/sogou/so/github`
+- 任一引擎不可用自动跳过，不影响其余引擎结果
+- 站点分类支持（每类 15+）：`government` / `education` / `research` / `media` / `forum` / `social` / `tech`
+- 基于查询意图自动重排引擎优先级：
+  - `源码 / code / github`：优先 `github`
+  - `官网 / official`：优先通用网页引擎并附带 `site:` 提示
+  - `最新 / 今日 / release`：优先 `news/media`
+- 结果输出包含检索时间戳与意图标签，降低时效误判风险
+
+`web_search` 常用参数：
+
+- `providers`: 指定引擎集合
+- `strictProviders`: `true` 时严格按 `providers` 执行；`false` 时允许按意图自动重排
+- `sites`: 专业站点定向域名数组，例如 `["github.com", "openclaw.ai"]`
+- `categories`: 站点分类数组，例如 `["tech", "research", "media"]`
+
+如果不在每次调用里传 `categories`，系统会默认使用配置中的 `tools.webSearch.categories`。
 
 ## CLI 命令
 
@@ -226,7 +285,7 @@ bun run package:msi
 
 ### github 构建
 
-```
+```bash
 git tag v0.1.0
 
 git push origin v0.1.0
@@ -272,11 +331,13 @@ bun run publish:npm
 ```
 
 组织发布目标：
+
 - npm scope：`@idao-cube`
 - 包名：`@idao-cube/bunclaw`
 - 地址：`https://www.npmjs.com/org/idao-cube`
 
 GitHub Action 自动发布 npm 的前置条件：
+
 - 在仓库 Secrets 配置 `NPM_TOKEN`
 - `NPM_TOKEN` 对 `@idao-cube` 组织具备发布权限
 - 推送版本标签（如 `v0.1.1`）后触发自动发布
@@ -323,6 +384,8 @@ git push origin v0.1.1
 - `No files were found with dist/*.msi`：MSI 构建失败，查看 `Build MSI` 步骤日志。
 - Linux/macOS 二进制不可执行：先 `chmod +x`。
 - 双击二进制没启动网关：需要带子命令（如 `gateway`）。
+- `未知命令: getaway`：命令拼写错误，正确是 `bun start gateway`。
+- `EADDRINUSE (port 16789 in use)`：端口已占用。可先停止旧进程，或改配置里的 `gateway.port` 后重启。
 
 ## 开发与测试
 

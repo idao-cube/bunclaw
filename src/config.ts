@@ -17,7 +17,7 @@ export function defaultConfig(): Config {
       profile: "coding",
       allow: [],
       deny: [],
-      webSearch: { providers: ["news", "media", "bing", "google", "baidu", "github"], timeoutMs: 8000 },
+      webSearch: { providers: ["news", "media", "bing", "google", "duckduckgo", "baidu", "sogou", "so", "github"], categories: ["tech", "research", "media"], timeoutMs: 8000, customScript: "" },
     },
     sessions: {
       dbPath: toPlatformPath(`${DEFAULT_BASE_DIR}/bunclaw.db`),
@@ -49,6 +49,7 @@ export async function loadConfig(path = DEFAULT_CONFIG_PATH): Promise<Config> {
   if (!(await file.exists())) return defaultConfig();
   const parsed = JSON.parse(await file.text()) as Config;
   const def = defaultConfig();
+  const parsedStorage = parsed.storage ?? ({} as NonNullable<Config["storage"]>);
   const merged: Config = {
     ...def,
     ...parsed,
@@ -56,7 +57,12 @@ export async function loadConfig(path = DEFAULT_CONFIG_PATH): Promise<Config> {
     model: { ...def.model, ...parsed.model },
     tools: { ...def.tools, ...parsed.tools },
     sessions: { ...def.sessions, ...parsed.sessions },
-    storage: { ...def.storage, ...(parsed.storage ?? {}) },
+    storage: {
+      baseDir: parsedStorage.baseDir || def.storage!.baseDir,
+      skillsDir: parsedStorage.skillsDir || def.storage!.skillsDir,
+      agentsDir: parsedStorage.agentsDir || def.storage!.agentsDir,
+      channelsDir: parsedStorage.channelsDir || def.storage!.channelsDir,
+    },
     security: { ...def.security, ...parsed.security },
     ui: { ...def.ui, ...parsed.ui },
   };
